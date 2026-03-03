@@ -151,6 +151,7 @@ async function handleForwardedMessage(msg, env) {
     const isChinese = containsChinese(originalText);
     if (!isChinese && env.TRANSLATE_API_URL) {
       const translated = await translateText(originalText, 'zh', env);
+      // 翻译部分包含前后空行和分隔线
       translationPart = `\n---\n\nGoogle 翻译如下\n\n${translated}\n\n---`;
     }
   }
@@ -186,15 +187,28 @@ async function handleForwardedMessage(msg, env) {
   const fileName = `${safeTitle}-Log.txt`;
   // =================================
 
-  // 5. 组装文件内容（第一行使用标题，不加 -Log）
-  let fileContent = `${safeTitle}\n`;
-  fileContent += `${channelLink}\n\n`;
-  fileContent += `---\n\n更新日志原文如下\n\n${originalText}\n\n`;
-  fileContent += translationPart;
-  fileContent += `\n\n更新信息\n\n消息原始发送时间：${sendTimeFormatted}\n`;
+  // 5. 组装文件内容（严格按照模板）
+  let fileContent = `${safeTitle}\n`;                // 第一行：标题
+  fileContent += `${channelLink}\n\n`;               // 第二行：频道链接 + 空行
+  fileContent += `---\n\n`;                          // 第一个分隔线 + 空行
+  fileContent += `更新日志原文如下\n\n`;              // 小标题 + 空行
+  fileContent += `${originalText}\n\n`;              // 原文 + 空行
+
+  // 如果有翻译，插入翻译部分（它已自带前后格式）
+  if (translationPart) {
+    fileContent += translationPart;
+  } else {
+    // 无翻译时，直接插入第二个分隔线（与更新信息之间留一个空行）
+    fileContent += `---\n\n`;
+  }
+
+  // 更新信息部分
+  fileContent += `更新信息\n\n`;                      // 小标题 + 空行
+  fileContent += `消息原始发送时间：${sendTimeFormatted}\n`;
   fileContent += `本文件最后编辑时间：${fileEditTimeFormatted}\n`;
   fileContent += `本文件自动生成 @Turningcat_bot 自动生成\n\n`;
-  fileContent += `---\n\n请勿相信任何非管理上传模块 提高防范意识 谢谢`;
+  fileContent += `---\n\n`;                          // 最后的分隔线
+  fileContent += `请勿相信任何非管理上传模块 提高防范意识 谢谢`;
 
   // 6. 发送文件
   await sendDocument(token, chatId, fileName, fileContent);
@@ -209,4 +223,4 @@ async function handleGenFile(token, chatId, userId, userName) {
                   `文件内容：你可以在这里放入任何想要的文本信息。`;
   const fileName = `file_${Date.now()}.txt`;
   await sendDocument(token, chatId, fileName, content);
-}
+    }
