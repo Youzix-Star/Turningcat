@@ -74,34 +74,8 @@ function formatDate(timestamp) {
   return `${yy}.${mm}.${dd} ${hh}:${min}:${ss}`;
 }
 
-function containsChinese(text) {
-  return /[\u4e00-\u9fa5]/.test(text);
-}
-
 function sanitizeFilename(name) {
   return name.replace(/[\\/:*?"<>|]/g, '_').substring(0, 50);
-}
-
-async function translateText(text, targetLang, env) {
-  const apiUrl = env.TRANSLATE_API_URL;
-  if (!apiUrl) {
-    console.error('翻译代理地址未配置');
-    return '[翻译服务未配置]';
-  }
-  try {
-    const url = `${apiUrl}/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    if (data && data.code === 0 && data.text) {
-      return data.text;
-    } else {
-      throw new Error('翻译返回格式错误');
-    }
-  } catch (e) {
-    console.error('翻译失败', e);
-    return `[翻译失败] ${text}`;
-  }
 }
 
 async function sendDocument(token, chatId, fileName, content) {
@@ -208,7 +182,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
           } finally {
             resolve();
           }
-        }, 1500); // 1.5 秒
+        }, 1500);
       })
     );
   }
@@ -274,15 +248,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     channelLink = `https://t.me/${groupData.forwardFromChat.username}`;
   }
 
-  let translationPart = '';
-  if (originalText) {
-    const isChinese = containsChinese(originalText);
-    if (!isChinese && env.TRANSLATE_API_URL) {
-      const translated = await translateText(originalText, 'zh', env);
-      translationPart = `\n---\n\nGoogle 翻译如下\n\n${translated}\n\n---`;
-    }
-  }
-
   const sendTimeFormatted = formatDate(forwardDate);
   const fileEditTimeFormatted = formatDate(now);
 
@@ -292,13 +257,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   fileContent += `---\n\n`;
   fileContent += `更新日志原文如下\n\n`;
   fileContent += `${originalText}\n\n`;
-
-  if (translationPart) {
-    fileContent += translationPart;
-  } else {
-    fileContent += `---\n\n`;
-  }
-
+  fileContent += `---\n\n`; // 直接使用分隔线，无翻译部分
   fileContent += `更新信息\n\n`;
   fileContent += `消息原始发送时间：${sendTimeFormatted}\n`;
   fileContent += `本文件最后编辑时间：${fileEditTimeFormatted}\n`;
@@ -310,7 +269,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   await sendDocument(token, chatId, fileName, fileContent);
 
   await editMessageRemoveKeyboard(token, chatId, messageId);
-  await kv.delete(mediaGroupId); // 清理已处理的组
+  await kv.delete(mediaGroupId);
 }
 
 // ==================== 单条转发消息处理 ====================
@@ -325,7 +284,7 @@ async function handleForwardedMessage(msg, env, ctx) {
     if (handled) return;
   }
 
-  // 单条消息处理（原有逻辑）
+  // 单条消息处理
   const forwardDate = msg.forward_date;
   const forwardFromChat = msg.forward_from_chat;
   let originalText = msg.text || msg.caption || '';
@@ -342,15 +301,6 @@ async function handleForwardedMessage(msg, env, ctx) {
   } else {
     await sendTelegramMessage(token, chatId, '只支持处理来自频道的转发消息。');
     return;
-  }
-
-  let translationPart = '';
-  if (originalText) {
-    const isChinese = containsChinese(originalText);
-    if (!isChinese && env.TRANSLATE_API_URL) {
-      const translated = await translateText(originalText, 'zh', env);
-      translationPart = `\n---\n\nGoogle 翻译如下\n\n${translated}\n\n---`;
-    }
   }
 
   const sendTimeFormatted = formatDate(forwardDate);
@@ -376,13 +326,7 @@ async function handleForwardedMessage(msg, env, ctx) {
   fileContent += `---\n\n`;
   fileContent += `更新日志原文如下\n\n`;
   fileContent += `${originalText}\n\n`;
-
-  if (translationPart) {
-    fileContent += translationPart;
-  } else {
-    fileContent += `---\n\n`;
-  }
-
+  fileContent += `---\n\n`; // 分隔线
   fileContent += `更新信息\n\n`;
   fileContent += `消息原始发送时间：${sendTimeFormatted}\n`;
   fileContent += `本文件最后编辑时间：${fileEditTimeFormatted}\n`;
@@ -404,4 +348,4 @@ async function handleGenFile(token, chatId, userId, userName) {
                   `文件内容：你可以在这里放入任何想要的文本信息。`;
   const fileName = `file_${Date.now()}.txt`;
   await sendDocument(token, chatId, fileName, content);
-}
+                     }
