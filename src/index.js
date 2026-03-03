@@ -1,4 +1,5 @@
 // src/index.js
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== 'POST') {
@@ -8,36 +9,40 @@ export default {
     try {
       const update = await request.json();
 
+      // 处理回调查询
       if (update.callback_query) {
         await handleCallbackQuery(update.callback_query, env, ctx);
         return new Response('OK', { status: 200 });
       }
 
+      // 处理消息
       if (update.message) {
         const msg = update.message;
         const chatId = msg.chat.id;
         const text = msg.text;
 
+        // 优先处理转发消息（生成文件）
         if (msg.forward_date) {
           await handleForwardedMessage(msg, env, ctx);
           return new Response('OK', { status: 200 });
         }
 
+        // 普通命令处理
         if (text === '/start') {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-            'ฅ^•ﻌ•^ฅ 欢迎来找喵玩~\n发送 /genfile 试试看，喵会给你一个小文件哟~');
+            '你好！我是你的机器人。\n发送 /genfile 试试看，我会生成一个文件给你。');
         } else if (text === '/genfile') {
           await handleGenFile(env.TELEGRAM_BOT_TOKEN, chatId, msg.from.id, msg.from.first_name);
         } else if (text === '/help') {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-            '✨ 这里是喵的帮助小纸条 ✨\n\n' +
-            '/start - 开始和喵聊天~\n' +
-            '/genfile - 给你一个小文件喵\n' +
-            '/help - 查看这个帮助\n\n' +
-            '还有悄悄告诉你~ 转发频道的消息给喵，喵可以帮你生成日志文件哦！(ฅ´ω`ฅ)');
+            '📖 帮助信息\n\n' +
+            '• /start - 开始使用机器人\n' +
+            '• /genfile - 生成一个测试文件\n' +
+            '• /help - 显示本帮助\n\n' +
+            '✨ 其他功能：\n' +
+            '转发来自频道的消息（可包含多个文件），机器人会自动提供文件选择菜单，生成包含更新日志的 TXT 文件。');
         } else {
-          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-            `喵？你说了：“${text}” 吗？(´･ω･`)`);
+          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `你说了：${text}`);
         }
       }
 
@@ -66,6 +71,7 @@ async function sendTelegramMessage(token, chatId, text) {
 }
 
 function formatDate(timestamp) {
+  // 北京时间 (UTC+8)
   const beijingTime = new Date((timestamp + 8 * 3600) * 1000);
   const yy = beijingTime.getUTCFullYear().toString().slice(-2);
   const mm = String(beijingTime.getUTCMonth() + 1).padStart(2, '0');
@@ -86,12 +92,12 @@ async function sendDocument(token, chatId, fileName, content) {
   formData.append('chat_id', chatId);
   const blob = new Blob([content], { type: 'text/plain' });
   formData.append('document', blob, fileName);
-  formData.append('caption', `ฅ^•ﻌ•^ฅ 这是你要的文件喵~ ${fileName}`);
+  formData.append('caption', `已生成文件：${fileName}`);
   const response = await fetch(url, { method: 'POST', body: formData });
   if (!response.ok) {
     const errorText = await response.text();
     console.error('发送文件失败：', errorText);
-    await sendTelegramMessage(token, chatId, '呜…文件发送失败了，请再试一次喵(｡•́︿•̀｡)');
+    await sendTelegramMessage(token, chatId, '文件发送失败，请稍后重试。');
   }
 }
 
@@ -109,7 +115,7 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
   });
 }
 
-// ==================== 媒体组处理 ====================
+// ==================== 媒体组处理（单一延迟任务）====================
 
 async function handleMediaGroupMessage(msg, env, ctx) {
   const mediaGroupId = msg.media_group_id;
@@ -119,8 +125,10 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   const token = env.TELEGRAM_BOT_TOKEN;
   const chatId = msg.chat.id;
 
+  // 获取现有组数据
   let groupData = await kv.get(mediaGroupId, { type: 'json' });
   if (!groupData) {
+    // 首次创建
     groupData = {
       files: [],
       caption: '',
@@ -135,6 +143,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     };
   }
 
+  // 添加文件
   if (msg.document) {
     const fullName = msg.document.file_name;
     const lastDot = fullName.lastIndexOf('.');
@@ -154,6 +163,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     });
   }
 
+  // 更新 caption（如果有）
   const currentCaption = msg.caption || msg.text || '';
   if (currentCaption && groupData.caption !== currentCaption) {
     groupData.caption = currentCaption;
@@ -162,6 +172,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   groupData.lastUpdated = Date.now();
   await kv.put(mediaGroupId, JSON.stringify(groupData), { expirationTtl: 300 });
 
+  // 如果尚未启动定时器，则启动一个延迟任务（1.5秒后发送选择菜单）
   if (!groupData.timerStarted) {
     groupData.timerStarted = true;
     await kv.put(mediaGroupId, JSON.stringify(groupData), { expirationTtl: 300 });
@@ -190,7 +201,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
 async function sendFileSelection(token, chatId, mediaGroupId, groupData) {
   const inlineKeyboard = [];
   for (let i = 0; i < groupData.files.length; i++) {
-    const file = groupData.文件[i];
+    const file = groupData.files[i];
     const buttonText = file.title || file.file_name || `文件 ${i+1}`;
     inlineKeyboard.push([{
       text: buttonText,
@@ -202,7 +213,7 @@ async function sendFileSelection(token, chatId, mediaGroupId, groupData) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   const payload = {
     chat_id: chatId,
-    text: '喵发现你有好几个文件呢~ 想让我生成哪个的小日志呀？(｡•ᴗ•｡)',
+    text: '检测到多个文件，请选择要生成TXT的文件：',
     reply_markup: replyMarkup
   };
   await fetch(url, {
@@ -229,14 +240,14 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
 
   const kv = env.MEDIA_GROUP_CAPTIONS;
   const groupData = await kv.get(mediaGroupId, { type: 'json' });
-  if (!groupData || !groupData.文件[fileIndex]) {
-    await sendTelegramMessage(token, chatId, '呜…文件信息过期了，请重新转发给喵好不好？(｡•́︿•̀｡)');
+  if (!groupData || !groupData.files[fileIndex]) {
+    await sendTelegramMessage(token, chatId, '文件信息已过期，请重新转发。');
     await editMessageRemoveKeyboard(token, chatId, messageId);
     return;
   }
 
-  const file = groupData.文件[fileIndex];
-  const now = Math.floor(Date.当前() / 1000);
+  const file = groupData.files[fileIndex];
+  const now = Math.floor(Date.now() / 1000);
   const forwardDate = groupData.forwardDate || now;
   const originalText = groupData.caption || '';
 
@@ -254,7 +265,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   fileContent += `---\n\n`;
   fileContent += `更新日志原文如下\n\n`;
   fileContent += `${originalText}\n\n`;
-  fileContent += `---\n\n`;
+  fileContent += `---\n\n`; // 分隔线，无翻译
   fileContent += `更新信息\n\n`;
   fileContent += `消息原始发送时间：${sendTimeFormatted}\n`;
   fileContent += `本文件最后编辑时间：${fileEditTimeFormatted}\n`;
@@ -275,16 +286,18 @@ async function handleForwardedMessage(msg, env, ctx) {
   const token = env.TELEGRAM_BOT_TOKEN;
   const chatId = msg.chat.id;
 
+  // 如果是媒体组，交给媒体组处理器
   if (msg.media_group_id) {
     const handled = await handleMediaGroupMessage(msg, env, ctx);
     if (handled) return;
   }
 
+  // 单条消息处理
   const forwardDate = msg.forward_date;
   const forwardFromChat = msg.forward_from_chat;
   let originalText = msg.text || msg.caption || '';
   if (!originalText) {
-    await sendTelegramMessage(token, chatId, '喵？这条消息没有文字呢，没法生成文件啦~ (｡•́︿•̀｡)');
+    await sendTelegramMessage(token, chatId, '转发的消息没有文字内容，无法生成文件。');
     return;
   }
 
@@ -294,13 +307,13 @@ async function handleForwardedMessage(msg, env, ctx) {
   } else if (forwardFromChat) {
     channelLink = '私有频道，无公开链接';
   } else {
-    await sendTelegramMessage(token, chatId, '呜…喵只处理来自频道的消息哦，你再试试？(´･ω･`)');
+    await sendTelegramMessage(token, chatId, '只支持处理来自频道的转发消息。');
     return;
   }
 
   const sendTimeFormatted = formatDate(forwardDate);
   const now = Math.floor(Date.now() / 1000);
-  const fileEditTimeFormatted = formatDate(当前);
+  const fileEditTimeFormatted = formatDate(now);
 
   let titleBase = '';
   if (msg.document) {
@@ -320,7 +333,7 @@ async function handleForwardedMessage(msg, env, ctx) {
   fileContent += `${channelLink}\n\n`;
   fileContent += `---\n\n`;
   fileContent += `更新日志原文如下\n\n`;
-  fileContent += `${originalText}\n\n`;
+  fileContent += ${originalText}\n\n`;
   fileContent += `---\n\n`;
   fileContent += `更新信息\n\n`;
   fileContent += `消息原始发送时间：${sendTimeFormatted}\n`;
@@ -336,11 +349,11 @@ async function handleForwardedMessage(msg, env, ctx) {
 
 async function handleGenFile(token, chatId, userId, userName) {
   const now = Math.floor(Date.now() / 1000);
-  const formattedNow = formatDate(当前);
-  const content = `这是专门为 ${userName} 生成的小文件喵~\n` +
-                  `你的用户ID：${userId}\n` +
+  const formattedNow = formatDate(now);
+  const content = `这是为您生成的文件，${userName}！\n` +
+                  `您的用户ID：${userId}\n` +
                   `生成时间：${formattedNow}\n` +
-                  `内容：随便写点可爱的东西~ (ฅ´ω`ฅ)`;
-  const fileName = `file_${Date.当前()}.txt`;
+                  `文件内容：你可以在这里放入任何想要的文本信息。`;
+  const fileName = `file_${Date.now()}.txt`;
   await sendDocument(token, chatId, fileName, content);
-                             }
+      }
