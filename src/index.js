@@ -86,7 +86,6 @@ async function translateText(text, targetLang, env) {
     return '[翻译服务未配置]';
   }
   try {
-    // 构造请求 URL，与翻译代理代码匹配
     const url = `${apiUrl}/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
     const response = await fetch(url);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -129,10 +128,6 @@ async function handleForwardedMessage(msg, env) {
 
   // 1. 提取原文（优先取文本，否则取说明）
   let originalText = msg.text || msg.caption || '';
-  if (!originalText) {
-    await sendTelegramMessage(token, chatId, '转发的消息没有文字内容，无法生成文件。');
-    return;
-  }
 
   // 2. 获取频道信息
   let channelName = '未知频道';
@@ -152,34 +147,56 @@ async function handleForwardedMessage(msg, env) {
 
   // 3. 判断是否需要翻译（原文非中文时需要翻译成中文）
   let translationPart = '';
-  const isChinese = containsChinese(originalText);
-  if (!isChinese && env.TRANSLATE_API_URL) {
-    const translated = await translateText(originalText, 'zh', env);
-    translationPart = `\n---\n\nGoogle 翻译如下\n\n${translated}\n\n---`;
+  if (originalText) {
+    const isChinese = containsChinese(originalText);
+    if (!isChinese && env.TRANSLATE_API_URL) {
+      const translated = await translateText(originalText, 'zh', env);
+      translationPart = `\n---\n\nGoogle 翻译如下\n\n${translated}\n\n---`;
+    }
   }
 
   // 4. 格式化时间
   const sendTimeFormatted = formatDate(forwardDate);
-  const now = Math.floor(Date.now() / 1000); // 当前 Unix 时间戳
+  const now = Math.floor(Date.now() / 1000);
   const fileEditTimeFormatted = formatDate(now);
 
-  // 5. 生成文件名（基于频道名和当前时间）
-  const safeName = sanitizeFilename(channelName);
-  const timeStr = formatDate(now).replace(/[.: ]/g, '_'); // 替换掉时间中的点、冒号和空格
-  const fileNameBase = `${safeName}_${timeStr}`; // 不带扩展名
+  // ===== 生成标题（文件名基础）=====
+  let titleBase = '';
+  // 优先使用转发的文件名（如果是文件消息）
+  if (msg.document) {
+    const fullName = msg.document.file_name; // 例如 "FunBox Build.apk"
+    // 去掉扩展名（最后一个点及其之后）
+    const lastDot = fullName.lastIndexOf('.');
+    if (lastDot !== -1) {
+      titleBase = fullName.substring(0, lastDot);
+    } else {
+      titleBase = fullName; // 无扩展名
+    }
+  } else if (originalText) {
+    // 没有文件但有文本，取第一行作为标题
+    titleBase = originalText.split('\n')[0].trim();
+  } else {
+    titleBase = '未命名';
+  }
+  // 限制长度并清理非法字符
+  titleBase = titleBase.substring(0, 50);
+  const safeTitle = sanitizeFilename(titleBase);
 
-  // 6. 组装文件内容（按模板）
-  let fileContent = `${fileNameBase}\n`;
+  // 生成文件名（格式：标题-Log.txt）
+  const fileName = `${safeTitle}-Log.txt`;
+  // =================================
+
+  // 5. 组装文件内容（第一行使用标题，不加 -Log）
+  let fileContent = `${safeTitle}\n`;
   fileContent += `${channelLink}\n\n`;
   fileContent += `---\n\n更新日志原文如下\n\n${originalText}\n\n`;
-  fileContent += translationPart; // 如果翻译部分为空，这里会是一个空行，但保留结构
+  fileContent += translationPart;
   fileContent += `\n\n更新信息\n\n消息原始发送时间：${sendTimeFormatted}\n`;
   fileContent += `本文件最后编辑时间：${fileEditTimeFormatted}\n`;
   fileContent += `本文件自动生成 @Turningcat_bot 自动生成\n\n`;
   fileContent += `---\n\n请勿相信任何非管理上传模块 提高防范意识 谢谢`;
 
-  // 7. 发送文件
-  const fileName = `${fileNameBase}.txt`;
+  // 6. 发送文件
   await sendDocument(token, chatId, fileName, fileContent);
 }
 
