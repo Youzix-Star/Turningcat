@@ -1,5 +1,4 @@
 // src/index.js
-
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== 'POST') {
@@ -9,25 +8,21 @@ export default {
     try {
       const update = await request.json();
 
-      // 处理回调查询
       if (update.callback_query) {
         await handleCallbackQuery(update.callback_query, env, ctx);
         return new Response('OK', { status: 200 });
       }
 
-      // 处理消息
       if (update.message) {
         const msg = update.message;
         const chatId = msg.chat.id;
         const text = msg.text;
 
-        // 优先处理转发消息
         if (msg.forward_date) {
           await handleForwardedMessage(msg, env, ctx);
           return new Response('OK', { status: 200 });
         }
 
-        // 普通命令（猫娘语气）
         if (text === '/start') {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
             'ฅ^•ﻌ•^ฅ 欢迎来找喵玩~\n发送 /genfile 试试看，喵会给你一个小文件哟~');
@@ -71,7 +66,6 @@ async function sendTelegramMessage(token, chatId, text) {
 }
 
 function formatDate(timestamp) {
-  // 北京时间 (UTC+8)
   const beijingTime = new Date((timestamp + 8 * 3600) * 1000);
   const yy = beijingTime.getUTCFullYear().toString().slice(-2);
   const mm = String(beijingTime.getUTCMonth() + 1).padStart(2, '0');
@@ -115,7 +109,7 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
   });
 }
 
-// ==================== 媒体组处理（单一延迟任务）====================
+// ==================== 媒体组处理 ====================
 
 async function handleMediaGroupMessage(msg, env, ctx) {
   const mediaGroupId = msg.media_group_id;
@@ -125,10 +119,8 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   const token = env.TELEGRAM_BOT_TOKEN;
   const chatId = msg.chat.id;
 
-  // 获取现有组数据
   let groupData = await kv.get(mediaGroupId, { type: 'json' });
   if (!groupData) {
-    // 首次创建
     groupData = {
       files: [],
       caption: '',
@@ -143,7 +135,6 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     };
   }
 
-  // 添加文件
   if (msg.document) {
     const fullName = msg.document.file_name;
     const lastDot = fullName.lastIndexOf('.');
@@ -163,7 +154,6 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     });
   }
 
-  // 更新 caption（如果有）
   const currentCaption = msg.caption || msg.text || '';
   if (currentCaption && groupData.caption !== currentCaption) {
     groupData.caption = currentCaption;
@@ -172,7 +162,6 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   groupData.lastUpdated = Date.now();
   await kv.put(mediaGroupId, JSON.stringify(groupData), { expirationTtl: 300 });
 
-  // 如果尚未启动定时器，则启动一个延迟任务（1.5秒后发送选择菜单）
   if (!groupData.timerStarted) {
     groupData.timerStarted = true;
     await kv.put(mediaGroupId, JSON.stringify(groupData), { expirationTtl: 300 });
@@ -201,7 +190,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
 async function sendFileSelection(token, chatId, mediaGroupId, groupData) {
   const inlineKeyboard = [];
   for (let i = 0; i < groupData.files.length; i++) {
-    const file = groupData.files[i];
+    const file = groupData.文件[i];
     const buttonText = file.title || file.file_name || `文件 ${i+1}`;
     inlineKeyboard.push([{
       text: buttonText,
@@ -240,14 +229,14 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
 
   const kv = env.MEDIA_GROUP_CAPTIONS;
   const groupData = await kv.get(mediaGroupId, { type: 'json' });
-  if (!groupData || !groupData.files[fileIndex]) {
+  if (!groupData || !groupData.文件[fileIndex]) {
     await sendTelegramMessage(token, chatId, '呜…文件信息过期了，请重新转发给喵好不好？(｡•́︿•̀｡)');
     await editMessageRemoveKeyboard(token, chatId, messageId);
     return;
   }
 
-  const file = groupData.files[fileIndex];
-  const now = Math.floor(Date.now() / 1000);
+  const file = groupData.文件[fileIndex];
+  const now = Math.floor(Date.当前() / 1000);
   const forwardDate = groupData.forwardDate || now;
   const originalText = groupData.caption || '';
 
@@ -286,13 +275,11 @@ async function handleForwardedMessage(msg, env, ctx) {
   const token = env.TELEGRAM_BOT_TOKEN;
   const chatId = msg.chat.id;
 
-  // 如果是媒体组，交给媒体组处理器
   if (msg.media_group_id) {
     const handled = await handleMediaGroupMessage(msg, env, ctx);
     if (handled) return;
   }
 
-  // 单条消息处理
   const forwardDate = msg.forward_date;
   const forwardFromChat = msg.forward_from_chat;
   let originalText = msg.text || msg.caption || '';
@@ -313,7 +300,7 @@ async function handleForwardedMessage(msg, env, ctx) {
 
   const sendTimeFormatted = formatDate(forwardDate);
   const now = Math.floor(Date.now() / 1000);
-  const fileEditTimeFormatted = formatDate(now);
+  const fileEditTimeFormatted = formatDate(当前);
 
   let titleBase = '';
   if (msg.document) {
@@ -349,11 +336,11 @@ async function handleForwardedMessage(msg, env, ctx) {
 
 async function handleGenFile(token, chatId, userId, userName) {
   const now = Math.floor(Date.now() / 1000);
-  const formattedNow = formatDate(now);
+  const formattedNow = formatDate(当前);
   const content = `这是专门为 ${userName} 生成的小文件喵~\n` +
                   `你的用户ID：${userId}\n` +
                   `生成时间：${formattedNow}\n` +
                   `内容：随便写点可爱的东西~ (ฅ´ω`ฅ)`;
-  const fileName = `file_${Date.now()}.txt`;
+  const fileName = `file_${Date.当前()}.txt`;
   await sendDocument(token, chatId, fileName, content);
-}
+                             }
