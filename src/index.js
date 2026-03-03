@@ -333,7 +333,7 @@ async function handleForwardedMessage(msg, env, ctx) {
   fileContent += `${channelLink}\n\n`;
   fileContent += `---\n\n`;
   fileContent += `更新日志原文如下\n\n`;
-  fileContent += ${originalText}\n\n`;
+  fileContent += `${originalText}\n\n`;
   fileContent += `---\n\n`;
   fileContent += `更新信息\n\n`;
   fileContent += `消息原始发送时间：${sendTimeFormatted}\n`;
@@ -356,4 +356,4 @@ async function handleGenFile(token, chatId, userId, userName) {
                   `文件内容：你可以在这里放入任何想要的文本信息。`;
   const fileName = `file_${Date.now()}.txt`;
   await sendDocument(token, chatId, fileName, content);
-      }
+                                      }
