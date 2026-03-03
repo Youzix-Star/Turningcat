@@ -190,7 +190,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   groupData.lastUpdated = Date.now();
   await kv.put(mediaGroupId, JSON.stringify(groupData), { expirationTtl: 300 });
 
-  // 如果尚未启动定时器，则启动一个延迟任务（3秒后发送选择菜单）
+  // 如果尚未启动定时器，则启动一个延迟任务（1.5秒后发送选择菜单）
   if (!groupData.timerStarted) {
     groupData.timerStarted = true;
     await kv.put(mediaGroupId, JSON.stringify(groupData), { expirationTtl: 300 });
@@ -208,7 +208,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
           } finally {
             resolve();
           }
-        }, 3000);
+        }, 1500); // 1.5 秒
       })
     );
   }
@@ -404,4 +404,4 @@ async function handleGenFile(token, chatId, userId, userName) {
                   `文件内容：你可以在这里放入任何想要的文本信息。`;
   const fileName = `file_${Date.now()}.txt`;
   await sendDocument(token, chatId, fileName, content);
-    }
+}
