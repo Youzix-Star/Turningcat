@@ -27,14 +27,22 @@ export default {
           return new Response('OK', { status: 200 });
         }
 
-        // 普通命令
+        // 普通命令（猫娘语气）
         if (text === '/start') {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-            '你好！我是你的机器人。\n发送 /genfile 试试看，我会生成一个文件给你。');
+            'ฅ^•ﻌ•^ฅ 欢迎来找喵玩~\n发送 /genfile 试试看，喵会给你一个小文件哟~');
         } else if (text === '/genfile') {
           await handleGenFile(env.TELEGRAM_BOT_TOKEN, chatId, msg.from.id, msg.from.first_name);
+        } else if (text === '/help') {
+          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
+            '✨ 这里是喵的帮助小纸条 ✨\n\n' +
+            '/start - 开始和喵聊天~\n' +
+            '/genfile - 给你一个小文件喵\n' +
+            '/help - 查看这个帮助\n\n' +
+            '还有悄悄告诉你~ 转发频道的消息给喵，喵可以帮你生成日志文件哦！(ฅ´ω`ฅ)');
         } else {
-          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `你说了：${text}`);
+          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
+            `喵？你说了：“${text}” 吗？(´･ω･`)`);
         }
       }
 
@@ -84,12 +92,12 @@ async function sendDocument(token, chatId, fileName, content) {
   formData.append('chat_id', chatId);
   const blob = new Blob([content], { type: 'text/plain' });
   formData.append('document', blob, fileName);
-  formData.append('caption', `已生成文件：${fileName}`);
+  formData.append('caption', `ฅ^•ﻌ•^ฅ 这是你要的文件喵~ ${fileName}`);
   const response = await fetch(url, { method: 'POST', body: formData });
   if (!response.ok) {
     const errorText = await response.text();
     console.error('发送文件失败：', errorText);
-    await sendTelegramMessage(token, chatId, '文件发送失败，请稍后重试。');
+    await sendTelegramMessage(token, chatId, '呜…文件发送失败了，请再试一次喵(｡•́︿•̀｡)');
   }
 }
 
@@ -205,7 +213,7 @@ async function sendFileSelection(token, chatId, mediaGroupId, groupData) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   const payload = {
     chat_id: chatId,
-    text: '检测到多个文件，请选择要生成TXT的文件：',
+    text: '喵发现你有好几个文件呢~ 想让我生成哪个的小日志呀？(｡•ᴗ•｡)',
     reply_markup: replyMarkup
   };
   await fetch(url, {
@@ -233,7 +241,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   const kv = env.MEDIA_GROUP_CAPTIONS;
   const groupData = await kv.get(mediaGroupId, { type: 'json' });
   if (!groupData || !groupData.files[fileIndex]) {
-    await sendTelegramMessage(token, chatId, '文件信息已过期，请重新转发。');
+    await sendTelegramMessage(token, chatId, '呜…文件信息过期了，请重新转发给喵好不好？(｡•́︿•̀｡)');
     await editMessageRemoveKeyboard(token, chatId, messageId);
     return;
   }
@@ -257,7 +265,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   fileContent += `---\n\n`;
   fileContent += `更新日志原文如下\n\n`;
   fileContent += `${originalText}\n\n`;
-  fileContent += `---\n\n`; // 直接使用分隔线，无翻译部分
+  fileContent += `---\n\n`;
   fileContent += `更新信息\n\n`;
   fileContent += `消息原始发送时间：${sendTimeFormatted}\n`;
   fileContent += `本文件最后编辑时间：${fileEditTimeFormatted}\n`;
@@ -289,7 +297,7 @@ async function handleForwardedMessage(msg, env, ctx) {
   const forwardFromChat = msg.forward_from_chat;
   let originalText = msg.text || msg.caption || '';
   if (!originalText) {
-    await sendTelegramMessage(token, chatId, '转发的消息没有文字内容，无法生成文件。');
+    await sendTelegramMessage(token, chatId, '喵？这条消息没有文字呢，没法生成文件啦~ (｡•́︿•̀｡)');
     return;
   }
 
@@ -299,7 +307,7 @@ async function handleForwardedMessage(msg, env, ctx) {
   } else if (forwardFromChat) {
     channelLink = '私有频道，无公开链接';
   } else {
-    await sendTelegramMessage(token, chatId, '只支持处理来自频道的转发消息。');
+    await sendTelegramMessage(token, chatId, '呜…喵只处理来自频道的消息哦，你再试试？(´･ω･`)');
     return;
   }
 
@@ -326,7 +334,7 @@ async function handleForwardedMessage(msg, env, ctx) {
   fileContent += `---\n\n`;
   fileContent += `更新日志原文如下\n\n`;
   fileContent += `${originalText}\n\n`;
-  fileContent += `---\n\n`; // 分隔线
+  fileContent += `---\n\n`;
   fileContent += `更新信息\n\n`;
   fileContent += `消息原始发送时间：${sendTimeFormatted}\n`;
   fileContent += `本文件最后编辑时间：${fileEditTimeFormatted}\n`;
@@ -342,10 +350,10 @@ async function handleForwardedMessage(msg, env, ctx) {
 async function handleGenFile(token, chatId, userId, userName) {
   const now = Math.floor(Date.now() / 1000);
   const formattedNow = formatDate(now);
-  const content = `这是为您生成的文件，${userName}！\n` +
-                  `您的用户ID：${userId}\n` +
+  const content = `这是专门为 ${userName} 生成的小文件喵~\n` +
+                  `你的用户ID：${userId}\n` +
                   `生成时间：${formattedNow}\n` +
-                  `文件内容：你可以在这里放入任何想要的文本信息。`;
+                  `内容：随便写点可爱的东西~ (ฅ´ω`ฅ)`;
   const fileName = `file_${Date.now()}.txt`;
   await sendDocument(token, chatId, fileName, content);
-                     }
+}
