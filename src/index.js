@@ -1,41 +1,38 @@
 // src/index.js
-
-// 启用 Node.js 的 fs 模块，用于在 Workers 中操作文件
-import { writeFileSync } from 'node:fs';
-
 export default {
   async fetch(request, env, ctx) {
+    // 只处理 POST 请求（Telegram 发送更新时使用 POST）
     if (request.method !== 'POST') {
       return new Response('OK', { status: 200 });
     }
 
     try {
+      // 解析 Telegram 发送的 JSON 更新
       const update = await request.json();
 
+      // 检查是否有消息
       if (update.message) {
-        const chatId = update.message.chat.id;
-        const text = update.message.text;
-        const userId = update.message.from.id;
-        const userName = update.message.from.first_name || '用户';
+        const chatId = update.message.chat.id;          // 发送者的聊天 ID
+        const text = update.message.text;                // 消息文本
+        const userId = update.message.from.id;            // 用户 ID
+        const userName = update.message.from.first_name || '用户'; // 用户名
 
-        let replyText = '';
-        
-        // 处理 /start 命令
+        // 处理不同的命令
         if (text === '/start') {
-          replyText = '你好！我是你的机器人。\n发送 /genfile 试试看，我会生成一个文件给你。';
-          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, replyText);
-        }
-        // 处理 /genfile 命令 - 生成文件并发送
+          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, 
+            '你好！我是你的机器人。\n发送 /genfile 试试看，我会生成一个文件给你。');
+        } 
         else if (text === '/genfile') {
+          // 调用生成文件的函数
           await handleGenFile(env.TELEGRAM_BOT_TOKEN, chatId, userId, userName);
-        }
-        // 普通消息回复
+        } 
         else {
-          replyText = `你说了：${text}`;
-          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, replyText);
+          // 普通消息回复
+          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `你说了：${text}`);
         }
       }
 
+      // 告诉 Telegram 已成功接收（避免重复推送）
       return new Response('OK', { status: 200 });
     } catch (error) {
       console.error('处理出错：', error);
@@ -45,21 +42,29 @@ export default {
 };
 
 /**
- * 发送普通文本消息
+ * 发送普通文本消息到 Telegram
  */
 async function sendTelegramMessage(token, chatId, text) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
-  const payload = { chat_id: chatId, text };
-  await fetch(url, {
+  const payload = {
+    chat_id: chatId,
+    text: text,
+  };
+
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('发送消息失败：', errorText);
+  }
 }
 
 /**
- * 处理生成文件的请求
- * 创建一个临时 TXT 文件并通过 Telegram 发送
+ * 生成 TXT 文件并通过 Telegram 发送给用户
  */
 async function handleGenFile(token, chatId, userId, userName) {
   // 1. 生成文件内容
@@ -69,54 +74,31 @@ async function handleGenFile(token, chatId, userId, userName) {
                   `生成时间：${now.toLocaleString()}\n` +
                   `文件内容：你可以在这里放入任何想要的文本信息。`;
 
-  // 2. 创建一个唯一的文件名（使用时间戳避免冲突）
+  // 2. 创建文件名（使用时间戳避免重复）
   const fileName = `file_${Date.now()}.txt`;
-  
-  // 3. 在 /tmp 目录下创建临时文件并写入内容 [citation:3]
-  // 注意：Workers 的 /tmp 是内存文件系统，每个请求独立，用完即焚
-  const filePath = `/tmp/${fileName}`;
-  try {
-    writeFileSync(filePath, content, 'utf8');
-  } catch (fsError) {
-    console.error('文件写入失败：', fsError);
-    await sendTelegramMessage(token, chatId, '文件生成失败，请稍后重试。');
-    return;
-  }
 
-  // 4. 准备发送文件
-  // 需要构造 multipart/form-data 请求，因为我们要上传文件内容 [citation:2][citation:8]
+  // 3. 构建 FormData，直接附加文件内容
   const url = `https://api.telegram.org/bot${token}/sendDocument`;
-  
-  // 创建 FormData 对象
   const formData = new FormData();
   formData.append('chat_id', chatId);
-  
-  // 读取文件内容并作为 Blob 附加 [citation:7]
-  // 注意：这里我们重新读取文件（也可以直接用之前的内容构建 Blob，但为了演示文件操作，我们从文件系统读）
-  const fileContent = await fs.promises.readFile(filePath, 'utf8');
-  const blob = new Blob([fileContent], { type: 'text/plain' });
+
+  // 将内容转为 Blob，指定 MIME 类型为 text/plain
+  const blob = new Blob([content], { type: 'text/plain' });
   formData.append('document', blob, fileName);
-  
+
   // 可选：添加文件说明
   formData.append('caption', `这是为您生成的 ${fileName}`);
 
-  // 5. 发送请求
+  // 4. 发送请求
   const response = await fetch(url, {
     method: 'POST',
     body: formData,
   });
 
-  // 6. 清理临时文件（可选，因为 /tmp 在请求结束后会自动清除 [citation:3]）
-  // 但显式删除是好习惯
-  try {
-    fs.unlinkSync(filePath);
-  } catch (e) {
-    // 忽略清理错误
-  }
-
   if (!response.ok) {
     const errorText = await response.text();
     console.error('发送文件失败：', errorText);
+    // 如果文件发送失败，可以尝试用文本消息告知用户
     await sendTelegramMessage(token, chatId, '文件发送失败，请稍后重试。');
   }
 }
