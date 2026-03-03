@@ -56,15 +56,16 @@ async function sendTelegramMessage(token, chatId, text) {
   }
 }
 
-/** 格式化时间戳为 YY.MM.DD HH:MM:SS */
+/** 格式化时间戳为北京时间 YY.MM.DD HH:MM:SS */
 function formatDate(timestamp) {
-  const date = new Date(timestamp * 1000);
-  const yy = date.getFullYear().toString().slice(-2);
-  const mm = String(date.getMonth() + 1).padStart(2, '0');
-  const dd = String(date.getDate()).padStart(2, '0');
-  const hh = String(date.getHours()).padStart(2, '0');
-  const min = String(date.getMinutes()).padStart(2, '0');
-  const ss = String(date.getSeconds()).padStart(2, '0');
+  // 转换为北京时间（UTC+8）
+  const beijingTime = new Date((timestamp + 8 * 3600) * 1000);
+  const yy = beijingTime.getUTCFullYear().toString().slice(-2);
+  const mm = String(beijingTime.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(beijingTime.getUTCDate()).padStart(2, '0');
+  const hh = String(beijingTime.getUTCHours()).padStart(2, '0');
+  const min = String(beijingTime.getUTCMinutes()).padStart(2, '0');
+  const ss = String(beijingTime.getUTCSeconds()).padStart(2, '0');
   return `${yy}.${mm}.${dd} ${hh}:${min}:${ss}`;
 }
 
@@ -156,7 +157,7 @@ async function handleForwardedMessage(msg, env) {
     }
   }
 
-  // 4. 格式化时间
+  // 4. 格式化时间（使用北京时间）
   const sendTimeFormatted = formatDate(forwardDate);
   const now = Math.floor(Date.now() / 1000);
   const fileEditTimeFormatted = formatDate(now);
@@ -216,11 +217,12 @@ async function handleForwardedMessage(msg, env) {
 
 // ==================== 原有的 /genfile 功能 ====================
 async function handleGenFile(token, chatId, userId, userName) {
-  const now = new Date();
+  const now = Math.floor(Date.now() / 1000);
+  const formattedNow = formatDate(now);
   const content = `这是为您生成的文件，${userName}！\n` +
                   `您的用户ID：${userId}\n` +
-                  `生成时间：${now.toLocaleString()}\n` +
+                  `生成时间：${formattedNow}\n` +
                   `文件内容：你可以在这里放入任何想要的文本信息。`;
   const fileName = `file_${Date.now()}.txt`;
   await sendDocument(token, chatId, fileName, content);
-    }
+      }
