@@ -2,66 +2,6 @@
 
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-
-    // ---------- 静态资源处理 ----------
-    if (request.method === 'GET') {
-      // 首页（公开）
-      if (path === '/' || path === '/index.html') {
-        return env.ASSETS.fetch(new URL('/index.html', request.url));
-      }
-      // 样式文件（公开）
-      if (path === '/style.css') {
-        return env.ASSETS.fetch(new URL('/style.css', request.url));
-      }
-      // 设置页面（需要登录）
-      if (path === '/settings' || path === '/settings.html') {
-        // HTTP 基本认证
-        const auth = request.headers.get('Authorization');
-        const expectedAuth = 'Basic ' + btoa(env.ADMIN_USER + ':' + env.ADMIN_PASS);
-        if (!auth || auth !== expectedAuth) {
-          return new Response('需要登录', {
-            status: 401,
-            headers: { 'WWW-Authenticate': 'Basic realm="转向猫管理"', 'Content-Type': 'text/plain;charset=UTF-8' }
-          });
-        }
-        // 认证通过，返回 settings.html
-        return env.ASSETS.fetch(new URL('/settings.html', request.url));
-      }
-      // API：获取当前欢迎语（用于设置页面动态填充）
-      if (path === '/api/settings') {
-        const auth = request.headers.get('Authorization');
-        const expectedAuth = 'Basic ' + btoa(env.ADMIN_USER + ':' + env.ADMIN_PASS);
-        if (!auth || auth !== expectedAuth) {
-          return new Response('未授权', { status: 401 });
-        }
-        const welcome = await env.BOT_SETTINGS.get('welcome_message') || '';
-        return new Response(JSON.stringify({ welcome }), {
-          headers: { 'Content-Type': 'application/json' }
-        });
-      }
-    }
-
-    // ---------- 处理设置页面的 POST 请求（保存欢迎语）----------
-    if (path === '/settings' && request.method === 'POST') {
-      // 认证
-      const auth = request.headers.get('Authorization');
-      const expectedAuth = 'Basic ' + btoa(env.ADMIN_USER + ':' + env.ADMIN_PASS);
-      if (!auth || auth !== expectedAuth) {
-        return new Response('未授权', { status: 401 });
-      }
-      const formData = await request.formData();
-      const welcomeMessage = formData.get('welcome_message') || '';
-      await env.BOT_SETTINGS.put('welcome_message', welcomeMessage);
-      // 保存后重定向回设置页面（GET 请求会再次触发认证）
-      return new Response(null, {
-        status: 302,
-        headers: { 'Location': '/settings' }
-      });
-    }
-
-    // ---------- 以下为原有机器人逻辑（只处理 POST 请求）----------
     if (request.method !== 'POST') {
       return new Response('OK', { status: 200 });
     }
@@ -89,11 +29,10 @@ export default {
 
         // 普通命令处理
         if (text === '/start') {
-          let welcome = await env.BOT_SETTINGS.get('welcome_message');
-          if (!welcome) {
-            welcome = '哼～你终于来找我玩了喵！\n本喵是转向猫，可以帮你把转发的频道消息变成文件哦！\n试试 /genfile 看看本喵的厉害吧～';
-          }
-          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, welcome);
+          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
+            '哼～你终于来找我玩了喵！\n' +
+            '本喵是转向猫，可以帮你把转发的频道消息变成文件哦！\n' +
+            '试试 /genfile 看看本喵的厉害吧～');
         } else if (text === '/genfile') {
           await handleGenFile(env.TELEGRAM_BOT_TOKEN, chatId, msg.from.id, msg.from.first_name);
         } else if (text === '/help') {
@@ -178,7 +117,7 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
   });
 }
 
-// ==================== 媒体组处理 ====================
+// ==================== 媒体组处理（单一延迟任务）====================
 
 async function handleMediaGroupMessage(msg, env, ctx) {
   const mediaGroupId = msg.media_group_id;
@@ -188,8 +127,10 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   const token = env.TELEGRAM_BOT_TOKEN;
   const chatId = msg.chat.id;
 
+  // 获取现有组数据
   let groupData = await kv.get(mediaGroupId, { type: 'json' });
   if (!groupData) {
+    // 首次创建
     groupData = {
       files: [],
       caption: '',
@@ -204,6 +145,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     };
   }
 
+  // 添加文件
   if (msg.document) {
     const fullName = msg.document.file_name;
     const lastDot = fullName.lastIndexOf('.');
@@ -223,6 +165,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     });
   }
 
+  // 更新 caption（如果有）
   const currentCaption = msg.caption || msg.text || '';
   if (currentCaption && groupData.caption !== currentCaption) {
     groupData.caption = currentCaption;
@@ -231,6 +174,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   groupData.lastUpdated = Date.now();
   await kv.put(mediaGroupId, JSON.stringify(groupData), { expirationTtl: 300 });
 
+  // 如果尚未启动定时器，则启动一个延迟任务（1.5秒后发送选择菜单）
   if (!groupData.timerStarted) {
     groupData.timerStarted = true;
     await kv.put(mediaGroupId, JSON.stringify(groupData), { expirationTtl: 300 });
@@ -344,11 +288,13 @@ async function handleForwardedMessage(msg, env, ctx) {
   const token = env.TELEGRAM_BOT_TOKEN;
   const chatId = msg.chat.id;
 
+  // 如果是媒体组，交给媒体组处理器
   if (msg.media_group_id) {
     const handled = await handleMediaGroupMessage(msg, env, ctx);
     if (handled) return;
   }
 
+  // 单条消息处理
   const forwardDate = msg.forward_date;
   const forwardFromChat = msg.forward_from_chat;
   let originalText = msg.text || msg.caption || '';
