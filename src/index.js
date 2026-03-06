@@ -2,6 +2,82 @@
 
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    // ---------- 管理页面路由 ----------
+    if (request.method === 'GET' && path === '/') {
+      // 根路径欢迎页（不影响机器人 webhook，机器人只发 POST）
+      return new Response(
+        `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>转向猫 · 管理</title></head>
+<body>
+<h1>😺 转向猫机器人管理后台</h1>
+<p>机器人正常运行中～</p>
+<p><a href="/settings">⚙️ 进入设置页面</a>（需要登录）</p>
+<p><small>Powered by Cloudflare Workers</small></p>
+</body>
+</html>`,
+        { headers: { 'Content-Type': 'text/html;charset=UTF-8' } }
+      );
+    }
+
+    // 需要认证的路由（/settings）
+    if (path === '/settings') {
+      // 检查基本认证
+      const auth = request.headers.get('Authorization');
+      const expectedAuth = 'Basic ' + btoa(env.ADMIN_USER + ':' + env.ADMIN_PASS);
+      if (!auth || auth !== expectedAuth) {
+        return new Response('需要登录', {
+          status: 401,
+          headers: { 'WWW-Authenticate': 'Basic realm="转向猫管理"', 'Content-Type': 'text/plain;charset=UTF-8' }
+        });
+      }
+
+      // 处理 GET 请求：显示设置表单
+      if (request.method === 'GET') {
+        // 从 KV 读取当前设置
+        const welcomeMessage = await env.BOT_SETTINGS.get('welcome_message') || '';
+        return new Response(
+          `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>设置 · 转向猫</title></head>
+<body>
+<h1>⚙️ 机器人设置</h1>
+<form method="POST">
+  <label>自定义欢迎语（/start 时显示）：</label><br>
+  <textarea name="welcome_message" rows="3" cols="50">${welcomeMessage}</textarea><br><br>
+  <button type="submit">保存设置</button>
+</form>
+<p><a href="/">返回首页</a></p>
+</body>
+</html>`,
+          { headers: { 'Content-Type': 'text/html;charset=UTF-8' } }
+        );
+      }
+
+      // 处理 POST 请求：保存设置
+      if (request.method === 'POST') {
+        const formData = await request.formData();
+        const welcomeMessage = formData.get('welcome_message') || '';
+        await env.BOT_SETTINGS.put('welcome_message', welcomeMessage);
+        return new Response(
+          `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>保存成功</title></head>
+<body>
+<h1>✅ 设置已保存</h1>
+<p><a href="/settings">返回设置</a> | <a href="/">首页</a></p>
+</body>
+</html>`,
+          { headers: { 'Content-Type': 'text/html;charset=UTF-8' } }
+        );
+      }
+    }
+
+    // ---------- 以下为原有机器人逻辑 ----------
+    // 只处理 POST 请求（Telegram 更新）
     if (request.method !== 'POST') {
       return new Response('OK', { status: 200 });
     }
@@ -29,10 +105,12 @@ export default {
 
         // 普通命令处理
         if (text === '/start') {
-          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-            '哼～你终于来找我玩了喵！\n' +
-            '本喵是转向猫，可以帮你把转发的频道消息变成文件哦！\n' +
-            '试试 /genfile 看看本喵的厉害吧～');
+          // 从 KV 读取自定义欢迎语，若没有则用默认
+          let welcome = await env.BOT_SETTINGS.get('welcome_message');
+          if (!welcome) {
+            welcome = '哼～你终于来找我玩了喵！\n本喵是转向猫，可以帮你把转发的频道消息变成文件哦！\n试试 /genfile 看看本喵的厉害吧～';
+          }
+          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, welcome);
         } else if (text === '/genfile') {
           await handleGenFile(env.TELEGRAM_BOT_TOKEN, chatId, msg.from.id, msg.from.first_name);
         } else if (text === '/help') {
@@ -56,7 +134,7 @@ export default {
   },
 };
 
-// ==================== 工具函数 ====================
+// ==================== 以下为原有工具函数（完全不变）====================
 
 async function sendTelegramMessage(token, chatId, text) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
@@ -117,7 +195,7 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
   });
 }
 
-// ==================== 媒体组处理（单一延迟任务）====================
+// ==================== 媒体组处理（完全不变）====================
 
 async function handleMediaGroupMessage(msg, env, ctx) {
   const mediaGroupId = msg.media_group_id;
@@ -127,10 +205,8 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   const token = env.TELEGRAM_BOT_TOKEN;
   const chatId = msg.chat.id;
 
-  // 获取现有组数据
   let groupData = await kv.get(mediaGroupId, { type: 'json' });
   if (!groupData) {
-    // 首次创建
     groupData = {
       files: [],
       caption: '',
@@ -145,7 +221,6 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     };
   }
 
-  // 添加文件
   if (msg.document) {
     const fullName = msg.document.file_name;
     const lastDot = fullName.lastIndexOf('.');
@@ -165,7 +240,6 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     });
   }
 
-  // 更新 caption（如果有）
   const currentCaption = msg.caption || msg.text || '';
   if (currentCaption && groupData.caption !== currentCaption) {
     groupData.caption = currentCaption;
@@ -174,7 +248,6 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   groupData.lastUpdated = Date.now();
   await kv.put(mediaGroupId, JSON.stringify(groupData), { expirationTtl: 300 });
 
-  // 如果尚未启动定时器，则启动一个延迟任务（1.5秒后发送选择菜单）
   if (!groupData.timerStarted) {
     groupData.timerStarted = true;
     await kv.put(mediaGroupId, JSON.stringify(groupData), { expirationTtl: 300 });
@@ -282,19 +355,17 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   await kv.delete(mediaGroupId);
 }
 
-// ==================== 单条转发消息处理 ====================
+// ==================== 单条转发消息处理（完全不变）====================
 
 async function handleForwardedMessage(msg, env, ctx) {
   const token = env.TELEGRAM_BOT_TOKEN;
   const chatId = msg.chat.id;
 
-  // 如果是媒体组，交给媒体组处理器
   if (msg.media_group_id) {
     const handled = await handleMediaGroupMessage(msg, env, ctx);
     if (handled) return;
   }
 
-  // 单条消息处理
   const forwardDate = msg.forward_date;
   const forwardFromChat = msg.forward_from_chat;
   let originalText = msg.text || msg.caption || '';
@@ -347,7 +418,7 @@ async function handleForwardedMessage(msg, env, ctx) {
   await sendDocument(token, chatId, fileName, fileContent);
 }
 
-// ==================== /genfile 功能 ====================
+// ==================== /genfile 功能（完全不变）====================
 
 async function handleGenFile(token, chatId, userId, userName) {
   const now = Math.floor(Date.now() / 1000);
@@ -358,4 +429,4 @@ async function handleGenFile(token, chatId, userId, userName) {
                   `内容嘛……你自己看啦，反正不是很重要！哼！`;
   const fileName = `file_${Date.now()}.txt`;
   await sendDocument(token, chatId, fileName, content);
-    }
+        }
