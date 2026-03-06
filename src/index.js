@@ -5,16 +5,15 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // ---------- 静态资源处理（美观的管理页面）----------
+    // ---------- 静态资源处理 ----------
     if (request.method === 'GET') {
-      // 首页
+      // 首页（公开）
       if (path === '/' || path === '/index.html') {
-        // 直接返回 assets/index.html
-        return env.ASSETS.fetch(new Request('/index.html', request));
+        return env.ASSETS.fetch(new URL('/index.html', request.url));
       }
-      // 样式文件
+      // 样式文件（公开）
       if (path === '/style.css') {
-        return env.ASSETS.fetch(new Request('/style.css', request));
+        return env.ASSETS.fetch(new URL('/style.css', request.url));
       }
       // 设置页面（需要登录）
       if (path === '/settings' || path === '/settings.html') {
@@ -27,12 +26,11 @@ export default {
             headers: { 'WWW-Authenticate': 'Basic realm="转向猫管理"', 'Content-Type': 'text/plain;charset=UTF-8' }
           });
         }
-        // 返回 settings.html
-        return env.ASSETS.fetch(new Request('/settings.html', request));
+        // 认证通过，返回 settings.html
+        return env.ASSETS.fetch(new URL('/settings.html', request.url));
       }
       // API：获取当前欢迎语（用于设置页面动态填充）
       if (path === '/api/settings') {
-        // 同样需要认证
         const auth = request.headers.get('Authorization');
         const expectedAuth = 'Basic ' + btoa(env.ADMIN_USER + ':' + env.ADMIN_PASS);
         if (!auth || auth !== expectedAuth) {
@@ -56,7 +54,7 @@ export default {
       const formData = await request.formData();
       const welcomeMessage = formData.get('welcome_message') || '';
       await env.BOT_SETTINGS.put('welcome_message', welcomeMessage);
-      // 保存后重定向回设置页面
+      // 保存后重定向回设置页面（GET 请求会再次触发认证）
       return new Response(null, {
         status: 302,
         headers: { 'Location': '/settings' }
@@ -64,7 +62,6 @@ export default {
     }
 
     // ---------- 以下为原有机器人逻辑（只处理 POST 请求）----------
-    // 注意：Telegram 的 Webhook 只会发 POST 请求
     if (request.method !== 'POST') {
       return new Response('OK', { status: 200 });
     }
@@ -92,7 +89,6 @@ export default {
 
         // 普通命令处理
         if (text === '/start') {
-          // 从 KV 读取自定义欢迎语，若没有则用默认
           let welcome = await env.BOT_SETTINGS.get('welcome_message');
           if (!welcome) {
             welcome = '哼～你终于来找我玩了喵！\n本喵是转向猫，可以帮你把转发的频道消息变成文件哦！\n试试 /genfile 看看本喵的厉害吧～';
@@ -416,4 +412,4 @@ async function handleGenFile(token, chatId, userId, userName) {
                   `内容嘛……你自己看啦，反正不是很重要！哼！`;
   const fileName = `file_${Date.now()}.txt`;
   await sendDocument(token, chatId, fileName, content);
-                }
+}
