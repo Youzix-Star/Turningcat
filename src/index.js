@@ -5,79 +5,66 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // ---------- 管理页面路由 ----------
-    if (request.method === 'GET' && path === '/') {
-      // 根路径欢迎页（不影响机器人 webhook，机器人只发 POST）
-      return new Response(
-        `<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>转向猫 · 管理</title></head>
-<body>
-<h1>😺 转向猫机器人管理后台</h1>
-<p>机器人正常运行中～</p>
-<p><a href="/settings">⚙️ 进入设置页面</a>（需要登录）</p>
-<p><small>Powered by Cloudflare Workers</small></p>
-</body>
-</html>`,
-        { headers: { 'Content-Type': 'text/html;charset=UTF-8' } }
-      );
+    // ---------- 静态资源处理（美观的管理页面）----------
+    if (request.method === 'GET') {
+      // 首页
+      if (path === '/' || path === '/index.html') {
+        // 直接返回 assets/index.html
+        return env.ASSETS.fetch(new Request('/index.html', request));
+      }
+      // 样式文件
+      if (path === '/style.css') {
+        return env.ASSETS.fetch(new Request('/style.css', request));
+      }
+      // 设置页面（需要登录）
+      if (path === '/settings' || path === '/settings.html') {
+        // HTTP 基本认证
+        const auth = request.headers.get('Authorization');
+        const expectedAuth = 'Basic ' + btoa(env.ADMIN_USER + ':' + env.ADMIN_PASS);
+        if (!auth || auth !== expectedAuth) {
+          return new Response('需要登录', {
+            status: 401,
+            headers: { 'WWW-Authenticate': 'Basic realm="转向猫管理"', 'Content-Type': 'text/plain;charset=UTF-8' }
+          });
+        }
+        // 返回 settings.html
+        return env.ASSETS.fetch(new Request('/settings.html', request));
+      }
+      // API：获取当前欢迎语（用于设置页面动态填充）
+      if (path === '/api/settings') {
+        // 同样需要认证
+        const auth = request.headers.get('Authorization');
+        const expectedAuth = 'Basic ' + btoa(env.ADMIN_USER + ':' + env.ADMIN_PASS);
+        if (!auth || auth !== expectedAuth) {
+          return new Response('未授权', { status: 401 });
+        }
+        const welcome = await env.BOT_SETTINGS.get('welcome_message') || '';
+        return new Response(JSON.stringify({ welcome }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
     }
 
-    // 需要认证的路由（/settings）
-    if (path === '/settings') {
-      // 检查基本认证
+    // ---------- 处理设置页面的 POST 请求（保存欢迎语）----------
+    if (path === '/settings' && request.method === 'POST') {
+      // 认证
       const auth = request.headers.get('Authorization');
       const expectedAuth = 'Basic ' + btoa(env.ADMIN_USER + ':' + env.ADMIN_PASS);
       if (!auth || auth !== expectedAuth) {
-        return new Response('需要登录', {
-          status: 401,
-          headers: { 'WWW-Authenticate': 'Basic realm="转向猫管理"', 'Content-Type': 'text/plain;charset=UTF-8' }
-        });
+        return new Response('未授权', { status: 401 });
       }
-
-      // 处理 GET 请求：显示设置表单
-      if (request.method === 'GET') {
-        // 从 KV 读取当前设置
-        const welcomeMessage = await env.BOT_SETTINGS.get('welcome_message') || '';
-        return new Response(
-          `<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>设置 · 转向猫</title></head>
-<body>
-<h1>⚙️ 机器人设置</h1>
-<form method="POST">
-  <label>自定义欢迎语（/start 时显示）：</label><br>
-  <textarea name="welcome_message" rows="3" cols="50">${welcomeMessage}</textarea><br><br>
-  <button type="submit">保存设置</button>
-</form>
-<p><a href="/">返回首页</a></p>
-</body>
-</html>`,
-          { headers: { 'Content-Type': 'text/html;charset=UTF-8' } }
-        );
-      }
-
-      // 处理 POST 请求：保存设置
-      if (request.method === 'POST') {
-        const formData = await request.formData();
-        const welcomeMessage = formData.get('welcome_message') || '';
-        await env.BOT_SETTINGS.put('welcome_message', welcomeMessage);
-        return new Response(
-          `<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>保存成功</title></head>
-<body>
-<h1>✅ 设置已保存</h1>
-<p><a href="/settings">返回设置</a> | <a href="/">首页</a></p>
-</body>
-</html>`,
-          { headers: { 'Content-Type': 'text/html;charset=UTF-8' } }
-        );
-      }
+      const formData = await request.formData();
+      const welcomeMessage = formData.get('welcome_message') || '';
+      await env.BOT_SETTINGS.put('welcome_message', welcomeMessage);
+      // 保存后重定向回设置页面
+      return new Response(null, {
+        status: 302,
+        headers: { 'Location': '/settings' }
+      });
     }
 
-    // ---------- 以下为原有机器人逻辑 ----------
-    // 只处理 POST 请求（Telegram 更新）
+    // ---------- 以下为原有机器人逻辑（只处理 POST 请求）----------
+    // 注意：Telegram 的 Webhook 只会发 POST 请求
     if (request.method !== 'POST') {
       return new Response('OK', { status: 200 });
     }
@@ -134,7 +121,7 @@ export default {
   },
 };
 
-// ==================== 以下为原有工具函数（完全不变）====================
+// ==================== 工具函数 ====================
 
 async function sendTelegramMessage(token, chatId, text) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
@@ -195,7 +182,7 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
   });
 }
 
-// ==================== 媒体组处理（完全不变）====================
+// ==================== 媒体组处理 ====================
 
 async function handleMediaGroupMessage(msg, env, ctx) {
   const mediaGroupId = msg.media_group_id;
@@ -355,7 +342,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   await kv.delete(mediaGroupId);
 }
 
-// ==================== 单条转发消息处理（完全不变）====================
+// ==================== 单条转发消息处理 ====================
 
 async function handleForwardedMessage(msg, env, ctx) {
   const token = env.TELEGRAM_BOT_TOKEN;
@@ -418,7 +405,7 @@ async function handleForwardedMessage(msg, env, ctx) {
   await sendDocument(token, chatId, fileName, fileContent);
 }
 
-// ==================== /genfile 功能（完全不变）====================
+// ==================== /genfile 功能 ====================
 
 async function handleGenFile(token, chatId, userId, userName) {
   const now = Math.floor(Date.now() / 1000);
@@ -429,4 +416,4 @@ async function handleGenFile(token, chatId, userId, userName) {
                   `内容嘛……你自己看啦，反正不是很重要！哼！`;
   const fileName = `file_${Date.now()}.txt`;
   await sendDocument(token, chatId, fileName, content);
-        }
+                }
