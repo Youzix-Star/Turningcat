@@ -1,3 +1,7 @@
 name = "turningcat"
 main = "src/index.js"
 compatibility_date = "2024-04-01"
+
+[[kv_namespaces]]
+binding = "MEDIA_GROUP_CAPTIONS"
+id = "24275521efdc464494a2868cd5493888"
