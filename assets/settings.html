@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>设置 · 转向猫</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>⚙️ 机器人设置</h1>
+        <form method="POST" action="/settings" class="card">
+            <label for="welcome">自定义欢迎语（/start 时显示）</label>
+            <textarea id="welcome" name="welcome_message" rows="4" placeholder="例如：哼～你终于来了喵！">{{welcome}}</textarea>
+            <div class="button-group">
+                <button type="submit" class="btn primary">保存设置</button>
+                <a href="/" class="btn secondary">返回首页</a>
+            </div>
+        </form>
+        <p class="note">⚠️ 需要登录才能修改，用户名密码由管理员设置。</p>
+    </div>
+</body>
+</html>
