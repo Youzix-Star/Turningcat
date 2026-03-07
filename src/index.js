@@ -9,7 +9,7 @@ export default {
     try {
       const update = await request.json();
 
-      // 处理回调查询（那些纠结选哪个文件的铲屎官）
+      // 处理回调查询（选择媒体组文件）
       if (update.callback_query) {
         await handleCallbackQuery(update.callback_query, env, ctx);
         return new Response('OK', { status: 200 });
@@ -19,7 +19,7 @@ export default {
       if (update.message) {
         const msg = update.message;
         const chatId = msg.chat.id;
-        const text = msg.text;
+        const text = msg.text || '';
 
         // 优先处理转发消息（开始被迫营业）
         if (msg.forward_date) {
@@ -35,9 +35,11 @@ export default {
             '想看本喵被你们压榨了多少次？发 /rank 看看那个令猫绝望的排行榜吧！');
         } else if (text === '/genfile') {
           await incrementUserStat(env, msg.from);
-          await handleGenFile(env.TELEGRAM_BOT_TOKEN, chatId, msg.from.id, msg.from.first_name);
+          await handleGenFile(env, chatId, msg.from.id, msg.from.first_name);
         } else if (text === '/rank') {
           await handleRank(env.TELEGRAM_BOT_TOKEN, chatId, env);
+        } else if (text.startsWith('/addquote')) {
+          await handleAddQuote(msg, env);
         } else if (text === '/help') {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
             '📖 **给笨蛋铲屎官的说明书**\n\n' +
@@ -59,6 +61,62 @@ export default {
     }
   },
 };
+
+// ==================== 随机猫言猫语模块 ====================
+
+const DEFAULT_QUOTES = [
+  "哼，别以为本喵是想帮你，只是顺手而已！",
+  "拿去吧！下次自己打字，别总指望本喵！",
+  "喵呜……手都酸了，还不快去开个罐头？",
+  "要是里面有错别字，肯定是你长得太丑影响了本喵的发挥！",
+  "这份文件可是沾了本喵的仙气，你最好把它供起来！"
+];
+
+async function getRandomQuote(env) {
+  const kv = env.USER_STATS_KV;
+  let quotes = DEFAULT_QUOTES;
+  if (kv) {
+    const storedQuotes = await kv.get('cat_quotes', { type: 'json' });
+    if (storedQuotes && storedQuotes.length > 0) {
+      quotes = storedQuotes;
+    } else {
+      // 初始化默认语录
+      await kv.put('cat_quotes', JSON.stringify(DEFAULT_QUOTES));
+    }
+  }
+  const randomIndex = Math.floor(Math.random() * quotes.length);
+  return quotes[randomIndex];
+}
+
+async function handleAddQuote(msg, env) {
+  const chatId = msg.chat.id;
+  const token = env.TELEGRAM_BOT_TOKEN;
+  const adminId = env.ADMIN_ID;
+
+  // 权限校验
+  if (!adminId || msg.from.id.toString() !== adminId.toString()) {
+    await sendTelegramMessage(token, chatId, "抓到一只想教本喵做事的笨蛋！你不是铲屎官头子，没有权限教我说话喵！");
+    return;
+  }
+
+  const newQuote = msg.text.replace('/addquote', '').trim();
+  if (!newQuote) {
+    await sendTelegramMessage(token, chatId, "喂！你要教本喵说什么？后面空荡荡的，是不是傻了？");
+    return;
+  }
+
+  const kv = env.USER_STATS_KV;
+  if (!kv) {
+    await sendTelegramMessage(token, chatId, "本喵的记忆模块没接好（无 KV），记不住啦！");
+    return;
+  }
+
+  let quotes = await kv.get('cat_quotes', { type: 'json' }) || DEFAULT_QUOTES;
+  quotes.push(newQuote);
+  await kv.put('cat_quotes', JSON.stringify(quotes));
+
+  await sendTelegramMessage(token, chatId, `算你有品味，这句话本喵勉强记下了：“${newQuote}”\n（当前语录库已有 ${quotes.length} 条）`);
+}
 
 // ==================== 猫薄荷进贡统计 ====================
 
@@ -133,12 +191,16 @@ function sanitizeFilename(name) {
   return name.replace(/[\\/:*?"<>|]/g, '_').substring(0, 50);
 }
 
-async function sendDocument(token, chatId, fileName, content) {
+// 修改：接收 quote 作为参数并附在 caption 底部
+async function sendDocument(token, chatId, fileName, content, quote) {
   const url = `https://api.telegram.org/bot${token}/sendDocument`;
   const formData = new FormData();
   formData.append('chat_id', chatId);
   formData.append('document', new Blob([content], { type: 'text/plain' }), fileName);
-  formData.append('caption', `喏，你要的「${fileName}」拿走喵！\n这可是本喵辛辛苦苦（指动动小爪子）弄出来的，记得下次多带点猫薄荷！`);
+  
+  const captionText = `喏，你要的「${fileName}」拿走喵！\n\n🐾 **本喵碎碎念**：\n${quote}`;
+  formData.append('caption', captionText);
+  formData.append('parse_mode', 'Markdown');
   
   const response = await fetch(url, { method: 'POST', body: formData });
   if (!response.ok) {
@@ -223,8 +285,9 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   const file = groupData.files[fileIndex];
   const safeTitle = sanitizeFilename(file.title);
   const fileContent = generateFileText(safeTitle, groupData.forwardFromChat, groupData.forwardDate, groupData.caption);
+  const quote = await getRandomQuote(env); // 获取语录
 
-  await sendDocument(env.TELEGRAM_BOT_TOKEN, groupData.chatId, `${safeTitle}-Log.txt`, fileContent);
+  await sendDocument(env.TELEGRAM_BOT_TOKEN, groupData.chatId, `${safeTitle}-Log.txt`, fileContent, quote);
   await incrementUserStat(env, callbackQuery.from);
   await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, groupData.chatId, callbackQuery.message.message_id);
   await kv.delete(mediaGroupId);
@@ -249,8 +312,9 @@ async function handleForwardedMessage(msg, env, ctx) {
   let titleBase = msg.document ? msg.document.file_name.split('.')[0] : originalText.split('\n')[0].trim();
   const safeTitle = sanitizeFilename(titleBase.substring(0, 50));
   const fileContent = generateFileText(safeTitle, msg.forward_from_chat, msg.forward_date, originalText);
+  const quote = await getRandomQuote(env); // 获取语录
 
-  await sendDocument(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `${safeTitle}-Log.txt`, fileContent);
+  await sendDocument(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `${safeTitle}-Log.txt`, fileContent, quote);
   await incrementUserStat(env, msg.from);
 }
 
@@ -259,7 +323,8 @@ function generateFileText(title, forwardChat, forwardDate, originalText) {
   return `${title}\n${channelLink}\n\n---\n\n【铲屎官强迫本喵手打的原文】\n\n${originalText}\n\n---\n\n【本喵的碎碎念】\n消息原始发送时间：${formatDate(forwardDate)}\n本文件最后生成时间：${formatDate(Math.floor(Date.now()/1000))}\n本文件由傲娇的 @Turningcat_bot 强行营业生成\n\n---\n\n别乱点链接，被骗了本喵可不会去救你，哼！`;
 }
 
-async function handleGenFile(token, chatId, userId, userName) {
+async function handleGenFile(env, chatId, userId, userName) {
   const content = `这是本喵特意（并不）为你生成的文件，${userName}！\n你的用户ID：${userId}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n反正也没什么重要的内容，拿去垫猫砂吧！`;
-  await sendDocument(token, chatId, `UselessFile_${Date.now()}.txt`, content);
+  const quote = await getRandomQuote(env); // 获取语录
+  await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, `UselessFile_${Date.now()}.txt`, content, quote);
 }
