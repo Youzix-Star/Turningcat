@@ -32,7 +32,7 @@ export default {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
             '啧，又来了一个想白嫖本喵劳动力的愚蠢人类吗？喵～\n\n' +
             '听好了，本喵是<b>转向猫</b>。虽然很麻烦，但如果你转发频道消息给我，我就勉为其难帮你转成 TXT 吧。\n' +
-            '想看本喵被你们压榨了多少次？发 /rank 看看那个令猫绝望的排行榜吧！');
+            '想看本喵被压榨了多少次？发 /rank 看看那个令猫绝望的排行榜吧！');
         } else if (text === '/genfile') {
           await incrementUserStat(env, msg.from);
           await handleGenFile(env, chatId, msg.from.id, msg.from.first_name);
@@ -45,10 +45,8 @@ export default {
             '📖 <b>给笨蛋铲屎官的说明书</b>\n\n' +
             '• /start - 重新接受本喵的审视\n' +
             '• /genfile - 没事找事让本喵动动爪子\n' +
-            '• /rank - 看看谁进贡的猫薄荷（文件）最多\n' +
-            '• /help - 记不住命令就多看几遍！\n\n' +
-            '✨ <b>特殊叮嘱：</b>\n' +
-            '直接转发频道的消息过来就行了！就算你一次塞一堆文件，本喵也能帮你处理好。');
+            '• /rank - 看看谁进贡的猫薄荷最多\n' +
+            '• /help - 记不住命令就多看几遍！');
         } else {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `「${text}」？这种无聊的话就别发给本喵了喵！`);
         }
@@ -67,7 +65,6 @@ export default {
 const DEFAULT_QUOTES = [
   "哼，别以为本喵是想帮你，只是顺手而已！",
   "拿去吧！下次自己打字，别总指望本喵！",
-  "喵呜……手都酸了，还不快去开个罐头？",
   "要是里面有错别字，肯定是你长得太丑影响了本喵的发挥！",
   "这份文件可是沾了本喵的仙气，你最好把它供起来！"
 ];
@@ -88,16 +85,10 @@ async function handleAddQuote(msg, env) {
     await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, "抓到一只想教本喵做事的笨蛋！你没有权限喵！");
     return;
   }
-
   const newQuote = msg.text.replace('/addquote', '').trim();
-  if (!newQuote) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, "你要教本喵说什么？后面是空的喵！");
-    return;
-  }
-
+  if (!newQuote) return;
   const kv = env.USER_STATS_KV;
   if (!kv) return;
-
   let quotes = await kv.get('cat_quotes', { type: 'json' }) || DEFAULT_QUOTES;
   quotes.push(newQuote);
   await kv.put('cat_quotes', JSON.stringify(quotes));
@@ -124,19 +115,16 @@ async function handleRank(token, chatId, env) {
   const kv = env.USER_STATS_KV;
   let stats = kv ? await kv.get('global_leaderboard', { type: 'json' }) || {} : {};
   const sortedUsers = Object.values(stats).sort((a, b) => b.count - a.count);
-
   if (sortedUsers.length === 0) {
     await sendTelegramMessage(token, chatId, '空荡荡的...看来还没人敢来麻烦本喵嘛。');
     return;
   }
-
   let msg = '🌿 <b>猫薄荷进贡榜 (本喵的受难记录)</b> 🌿\n\n';
   const icons = ['👑', '🥈', '🥉', '🐾', '🐾', '🐾', '🐾', '🐾', '🐾', '🐾'];
   for (let i = 0; i < Math.min(sortedUsers.length, 10); i++) {
     msg += `${icons[i]} <b>${sortedUsers[i].name}</b>：进贡了 ${sortedUsers[i].count} 袋猫薄荷\n`;
   }
-  msg += '\n你们这些家伙...是不是想累死本喵喵？';
-  await sendTelegramMessage(token, chatId, msg);
+  await sendTelegramMessage(token, chatId, msg + '\n你们这些家伙...是不是想累死本喵喵？');
 }
 
 // ==================== 工具函数 ====================
@@ -163,22 +151,25 @@ function sanitizeFilename(name) {
   return name.replace(/[\\/:*?"<>|]/g, '_').substring(0, 50);
 }
 
+// 修复：使用 lastIndexOf 提取文件名，保留版本号中的点
+function getBaseName(fullName) {
+  const lastDot = fullName.lastIndexOf('.');
+  return lastDot !== -1 ? fullName.substring(0, lastDot) : fullName;
+}
+
 async function sendDocument(token, chatId, fileName, content, quote) {
   const url = `https://api.telegram.org/bot${token}/sendDocument`;
   const formData = new FormData();
   formData.append('chat_id', chatId);
   formData.append('document', new Blob([content], { type: 'text/plain' }), fileName);
   
-  // 使用 HTML 模式，避免下划线导致解析失败
   const captionText = `喏，你要的「<b>${escapeHtml(fileName)}</b>」拿走喵！\n\n🐾 <b>本喵碎碎念</b>：\n${escapeHtml(quote)}`;
   formData.append('caption', captionText);
   formData.append('parse_mode', 'HTML');
   
   const response = await fetch(url, { method: 'POST', body: formData });
   if (!response.ok) {
-    const err = await response.text();
-    console.error('发送失败原因：', err);
-    await sendTelegramMessage(token, chatId, '呜…文件发送失败了喵！可能是 Telegram 觉得文件名字太怪了喵！');
+    await sendTelegramMessage(token, chatId, '呜…文件发送失败了喵！检查下名字是不是太怪了喵！');
   }
 }
 
@@ -203,7 +194,8 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   };
 
   if (msg.document) {
-    groupData.files.push({ file_name: msg.document.file_name, title: msg.document.file_name.split('.')[0], file_id: msg.document.file_id });
+    // 修复点：使用 getBaseName
+    groupData.files.push({ file_name: msg.document.file_name, title: getBaseName(msg.document.file_name), file_id: msg.document.file_id });
   } else if (msg.photo) {
     groupData.files.push({ file_name: 'photo.jpg', title: '这张照片', file_id: msg.photo[msg.photo.length - 1].file_id });
   }
@@ -265,7 +257,9 @@ async function handleForwardedMessage(msg, env, ctx) {
     await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '连个字都没有，本喵没法干活喵！');
     return;
   }
-  let titleBase = msg.document ? msg.document.file_name.split('.')[0] : originalText.split('\n')[0].trim();
+
+  // 修复点：对于文档，使用 getBaseName 保留版本号
+  let titleBase = msg.document ? getBaseName(msg.document.file_name) : originalText.split('\n')[0].trim();
   const safeTitle = sanitizeFilename(titleBase.substring(0, 50));
   const fileContent = generateFileText(safeTitle, msg.forward_from_chat, msg.forward_date, originalText);
   const quote = await getRandomQuote(env);
@@ -280,7 +274,7 @@ function generateFileText(title, forwardChat, forwardDate, originalText) {
 }
 
 async function handleGenFile(env, chatId, userId, userName) {
-  const content = `这是本喵特意（并不）为你生成的文件，${userName}！\n用户ID：${userId}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}`;
+  const content = `这是本喵特意为你生成的文件，${userName}！\n用户ID：${userId}`;
   const quote = await getRandomQuote(env);
   await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, `File_${Date.now()}.txt`, content, quote);
 }
