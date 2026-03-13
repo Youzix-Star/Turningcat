@@ -270,11 +270,11 @@ async function handleForwardedMessage(msg, env, ctx) {
 
 function generateFileText(title, forwardChat, forwardDate, originalText) {
   const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '私有频道';
-  return `${title}\n${channelLink}\n\n---\n\n【原文】\n${originalText}\n\n---\n\n【本喵碎碎念】\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n由 @Turningcat_bot 生成`;
+  return `${title}\n${channelLink}\n\n---\n\n【更新日志原文】\n${originalText}\n\n---\n\n【本喵碎碎念】\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n由 @Turningcat_bot 生成`;
 }
 
 async function handleGenFile(env, chatId, userId, userName) {
   const content = `这是本喵特意为你生成的文件，${userName}！\n用户ID：${userId}`;
   const quote = await getRandomQuote(env);
   await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, `File_${Date.now()}.txt`, content, quote);
-}
+                          }
