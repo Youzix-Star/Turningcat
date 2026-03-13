@@ -85,7 +85,7 @@ async function handleAddQuote(msg, env) {
     await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, "抓到一只想教本喵做事的笨蛋！你没有权限喵！");
     return;
   }
-  const newQuote = msg.text.替换('/addquote', '').trim();
+  const newQuote = msg.text.replace('/addquote', '').trim();
   if (!newQuote) return;
   const kv = env.USER_STATS_KV;
   if (!kv) return;
@@ -95,7 +95,7 @@ async function handleAddQuote(msg, env) {
   await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `算你有品味，本喵记下了：“${newQuote}”`);
 }
 
-// ==================== 猫薄荷进贡统计部分 ====================
+// ==================== 猫薄荷进贡统计 ====================
 
 async function incrementUserStat(env, user) {
   const kv = env.USER_STATS_KV;
@@ -130,7 +130,7 @@ async function handleRank(token, chatId, env) {
 // ==================== 工具函数 ====================
 
 function escapeHtml(text) {
-  return text.替换(/&/g, '&amp;').替换(/</g, '&lt;').替换(/>/g, '&gt;');
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 async function sendTelegramMessage(token, chatId, text) {
@@ -144,11 +144,11 @@ async function sendTelegramMessage(token, chatId, text) {
 function formatDate(timestamp) {
   const date = new Date((timestamp + 8 * 3600) * 1000);
   const pad = (n) => String(n).padStart(2, '0');
-  return `${date.getUTCFullYear().toString().slice(-2)}。${pad(date.getUTCMonth()+1)}。${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
+  return `${date.getUTCFullYear().toString().slice(-2)}.${pad(date.getUTCMonth()+1)}.${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
 }
 
 function sanitizeFilename(name) {
-  return name.替换(/[\\/:*?"<>|]/g, '_').substring(0, 50);
+  return name.replace(/[\\/:*?"<>|]/g, '_').substring(0, 50);
 }
 
 // 修复：使用 lastIndexOf 提取文件名，保留版本号中的点
@@ -161,7 +161,7 @@ async function sendDocument(token, chatId, fileName, content, quote) {
   const url = `https://api.telegram.org/bot${token}/sendDocument`;
   const formData = new FormData();
   formData.append('chat_id', chatId);
-  formData。append('document', new Blob([content], { type: 'text/plain' }), fileName);
+  formData.append('document', new Blob([content], { type: 'text/plain' }), fileName);
   
   const captionText = `喏，你要的「<b>${escapeHtml(fileName)}</b>」拿走喵！\n\n🐾 <b>本喵碎碎念</b>：\n${escapeHtml(quote)}`;
   formData.append('caption', captionText);
@@ -277,4 +277,4 @@ async function handleGenFile(env, chatId, userId, userName) {
   const content = `这是本喵特意为你生成的文件，${userName}！\n用户ID：${userId}`;
   const quote = await getRandomQuote(env);
   await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, `File_${Date.now()}.txt`, content, quote);
-                          }
+}
