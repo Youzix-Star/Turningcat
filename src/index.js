@@ -9,7 +9,7 @@ export default {
     try {
       const update = await request.json();
 
-      // 处理回调查询（选择媒体组文件）
+      // 处理回调的查询（选择媒体组文件）
       if (update.callback_query) {
         await handleCallbackQuery(update.callback_query, env, ctx);
         return new Response('OK', { status: 200 });
