@@ -9,7 +9,7 @@ export default {
     try {
       const update = await request.json();
 
-      // 处理回调的查询（选择媒体组文件）
+      // 处理回调查询
       if (update.callback_query) {
         await handleCallbackQuery(update.callback_query, env, ctx);
         return new Response('OK', { status: 200 });
@@ -31,7 +31,7 @@ export default {
         if (text === '/start') {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
             '啧，又来了一个想白嫖本喵劳动力的愚蠢人类吗？喵～\n\n' +
-            '听好了，本喵是<b>转向猫</b>。虽然很麻烦，但如果你转发频道消息给我，我就勉为其难帮你转成 TXT 吧。\n' +
+            '听好了，本喵是<b>转向猫</b>。虽然很麻烦，但如果你转发频道消息给我，我就勉为其难帮你转成 TXT 或 MD 吧。\n' +
             '想看本喵被压榨了多少次？发 /rank 看看那个令猫绝望的排行榜吧！');
         } else if (text === '/genfile') {
           await incrementUserStat(env, msg.from);
@@ -151,17 +151,17 @@ function sanitizeFilename(name) {
   return name.replace(/[\\/:*?"<>|]/g, '_').substring(0, 50);
 }
 
-// 修复：使用 lastIndexOf 提取文件名，保留版本号中的点
 function getBaseName(fullName) {
   const lastDot = fullName.lastIndexOf('.');
   return lastDot !== -1 ? fullName.substring(0, lastDot) : fullName;
 }
 
-async function sendDocument(token, chatId, fileName, content, quote) {
+async function sendDocument(token, chatId, fileName, content, quote, format = 'txt') {
+  const mimeType = format === 'md' ? 'text/markdown' : 'text/plain';
   const url = `https://api.telegram.org/bot${token}/sendDocument`;
   const formData = new FormData();
   formData.append('chat_id', chatId);
-  formData.append('document', new Blob([content], { type: 'text/plain' }), fileName);
+  formData.append('document', new Blob([content], { type: mimeType }), fileName);
   
   const captionText = `喏，你要的「<b>${escapeHtml(fileName)}</b>」拿走喵！\n\n🐾 <b>本喵碎碎念</b>：\n${escapeHtml(quote)}`;
   formData.append('caption', captionText);
@@ -181,6 +181,58 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
   });
 }
 
+// ==================== 生成文件内容（支持格式） ====================
+
+function generateFileContent(format, title, forwardChat, forwardDate, originalText) {
+  const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '（私有频道）';
+  
+  if (format === 'md') {
+    // Markdown 格式
+    const escapedOriginal = originalText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+    return `# ${title}
+
+📢 **来源频道**：[${escapeHtml(forwardChat.title)}](${channelLink})
+
+---
+
+## 📄 更新日志原文
+
+${escapedOriginal}
+
+---
+
+## 🐾 本喵碎碎念
+
+> 本喵只是无情的格式转换工具喵。
+
+- **转发时间**：${formatDate(forwardDate)}  
+- **生成时间**：${formatDate(Math.floor(Date.now()/1000))}  
+- 由 [@Turningcat_bot](https://t.me/Turningcat_bot) 生成
+`;
+  } else {
+    // TXT 格式（保持原样）
+    return `${title}\n${channelLink}\n\n---\n\n【更新日志原文】\n${originalText}\n\n---\n\n【本喵碎碎念】\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n由 @Turningcat_bot 生成`;
+  }
+}
+
+// ==================== 临时存储单文件转发数据 ====================
+
+async function storePendingForward(env, key, data) {
+  const kv = env.MEDIA_GROUP_CAPTIONS; // 复用这个 KV，加上前缀
+  await kv.put(`pending:${key}`, JSON.stringify(data), { expirationTtl: 60 });
+}
+
+async function getPendingForward(env, key) {
+  const kv = env.MEDIA_GROUP_CAPTIONS;
+  const data = await kv.get(`pending:${key}`, { type: 'json' });
+  return data;
+}
+
+async function deletePendingForward(env, key) {
+  const kv = env.MEDIA_GROUP_CAPTIONS;
+  await kv.delete(`pending:${key}`);
+}
+
 // ==================== 媒体组处理 ====================
 
 async function handleMediaGroupMessage(msg, env, ctx) {
@@ -194,7 +246,6 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   };
 
   if (msg.document) {
-    // 修复点：使用 getBaseName
     groupData.files.push({ file_name: msg.document.file_name, title: getBaseName(msg.document.file_name), file_id: msg.document.file_id });
   } else if (msg.photo) {
     groupData.files.push({ file_name: 'photo.jpg', title: '这张照片', file_id: msg.photo[msg.photo.length - 1].file_id });
@@ -205,7 +256,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     groupData.timerStarted = true;
     ctx.waitUntil(new Promise(resolve => setTimeout(async () => {
       const finalData = await kv.get(mediaGroupId, { type: 'json' });
-      if (finalData) await sendFileSelection(env.TELEGRAM_BOT_TOKEN, finalData.chatId, mediaGroupId, finalData);
+      if (finalData) await sendFileSelectionWithFormat(env.TELEGRAM_BOT_TOKEN, finalData.chatId, mediaGroupId, finalData);
       resolve();
     }, 1500)));
   }
@@ -213,38 +264,23 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   return true;
 }
 
-async function sendFileSelection(token, chatId, mediaGroupId, groupData) {
-  const inlineKeyboard = groupData.files.map((file, i) => ([{
-    text: `📄 ${file.title}`,
-    callback_data: `select_file:${mediaGroupId}:${i}`
-  }]));
+async function sendFileSelectionWithFormat(token, chatId, mediaGroupId, groupData) {
+  const inlineKeyboard = [];
+  groupData.files.forEach((file, i) => {
+    // 每个文件生成两个按钮：TXT 和 MD
+    inlineKeyboard.push([
+      { text: `📄 ${file.title} (.txt)`, callback_data: `select_file:${mediaGroupId}:${i}:txt` },
+      { text: `📝 ${file.title} (.md)`, callback_data: `select_file:${mediaGroupId}:${i}:md` }
+    ]);
+  });
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text: '这么多文件，快点选一个喵！', reply_markup: { inline_keyboard: inlineKeyboard } })
+    body: JSON.stringify({ chat_id: chatId, text: '这么多文件，快点选一个喵！想要 TXT 还是 MD？', reply_markup: { inline_keyboard: inlineKeyboard } })
   });
 }
 
-async function handleCallbackQuery(callbackQuery, env, ctx) {
-  const data = callbackQuery.data;
-  if (!data.startsWith('select_file:')) return;
-  const [_, mediaGroupId, fileIndex] = data.split(':');
-  const kv = env.MEDIA_GROUP_CAPTIONS;
-  const groupData = await kv.get(mediaGroupId, { type: 'json' });
-  if (!groupData) return;
-
-  const file = groupData.files[fileIndex];
-  const safeTitle = sanitizeFilename(file.title);
-  const fileContent = generateFileText(safeTitle, groupData.forwardFromChat, groupData.forwardDate, groupData.caption);
-  const quote = await getRandomQuote(env);
-
-  await sendDocument(env.TELEGRAM_BOT_TOKEN, groupData.chatId, `${safeTitle}-Log.txt`, fileContent, quote);
-  await incrementUserStat(env, callbackQuery.from);
-  await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, groupData.chatId, callbackQuery.message.message_id);
-  await kv.delete(mediaGroupId);
-}
-
-// ==================== 核心逻辑 ====================
+// ==================== 单文件转发处理（带格式选择） ====================
 
 async function handleForwardedMessage(msg, env, ctx) {
   if (msg.media_group_id && await handleMediaGroupMessage(msg, env, ctx)) return;
@@ -258,20 +294,102 @@ async function handleForwardedMessage(msg, env, ctx) {
     return;
   }
 
-  // 修复点：对于文档，使用 getBaseName 保留版本号
   let titleBase = msg.document ? getBaseName(msg.document.file_name) : originalText.split('\n')[0].trim();
   const safeTitle = sanitizeFilename(titleBase.substring(0, 50));
-  const fileContent = generateFileText(safeTitle, msg.forward_from_chat, msg.forward_date, originalText);
-  const quote = await getRandomQuote(env);
 
-  await sendDocument(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `${safeTitle}-Log.txt`, fileContent, quote);
-  await incrementUserStat(env, msg.from);
+  // 生成一个唯一 ID 用于临时存储
+  const pendingId = `${msg.chat.id}_${Date.now()}`;
+  const pendingData = {
+    chatId: msg.chat.id,
+    title: safeTitle,
+    forwardChat: msg.forward_from_chat,
+    forwardDate: msg.forward_date,
+    originalText: originalText,
+    fromUser: msg.from
+  };
+  await storePendingForward(env, pendingId, pendingData);
+
+  // 发送内联键盘选择格式
+  const inlineKeyboard = [
+    [
+      { text: '📄 生成 TXT 文件', callback_data: `pending_format:${pendingId}:txt` },
+      { text: '📝 生成 MD 文件', callback_data: `pending_format:${pendingId}:md` }
+    ]
+  ];
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: msg.chat.id,
+      text: `收到来自「${escapeHtml(msg.forward_from_chat.title)}」的转发，要导出什么格式喵？`,
+      reply_markup: { inline_keyboard: inlineKeyboard }
+    })
+  });
 }
 
-function generateFileText(title, forwardChat, forwardDate, originalText) {
-  const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '私有频道';
-  return `${title}\n${channelLink}\n\n---\n\n【更新日志原文】\n${originalText}\n\n---\n\n【本喵碎碎念】\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n由 @Turningcat_bot 生成`;
+// ==================== 回调查询处理 ====================
+
+async function handleCallbackQuery(callbackQuery, env, ctx) {
+  const data = callbackQuery.data;
+  const msg = callbackQuery.message;
+  const chatId = msg.chat.id;
+  const messageId = msg.message_id;
+  const fromUser = callbackQuery.from;
+
+  // 处理媒体组文件选择（带格式）
+  if (data.startsWith('select_file:')) {
+    const parts = data.split(':');
+    const mediaGroupId = parts[1];
+    const fileIndex = parseInt(parts[2]);
+    const format = parts[3]; // 'txt' 或 'md'
+    
+    const kv = env.MEDIA_GROUP_CAPTIONS;
+    const groupData = await kv.get(mediaGroupId, { type: 'json' });
+    if (!groupData) {
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '数据过期了喵，重新转发一下吧！');
+      return;
+    }
+
+    const file = groupData.files[fileIndex];
+    const safeTitle = sanitizeFilename(file.title);
+    const fileContent = generateFileContent(format, safeTitle, groupData.forwardFromChat, groupData.forwardDate, groupData.caption);
+    const quote = await getRandomQuote(env);
+    const fileName = `${safeTitle}-Log.${format === 'md' ? 'md' : 'txt'}`;
+
+    await sendDocument(env.TELEGRAM_BOT_TOKEN, groupData.chatId, fileName, fileContent, quote, format);
+    await incrementUserStat(env, fromUser);
+    await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+    await kv.delete(mediaGroupId);
+    return;
+  }
+
+  // 处理单文件格式选择
+  if (data.startsWith('pending_format:')) {
+    const parts = data.split(':');
+    const pendingId = parts[1];
+    const format = parts[2];
+    
+    const pendingData = await getPendingForward(env, pendingId);
+    if (!pendingData) {
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '太久没选，本喵忘记刚才的请求了喵！');
+      await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+      return;
+    }
+
+    const { title, forwardChat, forwardDate, originalText, fromUser } = pendingData;
+    const fileContent = generateFileContent(format, title, forwardChat, forwardDate, originalText);
+    const quote = await getRandomQuote(env);
+    const fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
+
+    await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, fileContent, quote, format);
+    await incrementUserStat(env, fromUser);
+    await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+    await deletePendingForward(env, pendingId);
+    return;
+  }
 }
+
+// ==================== 原有辅助功能 ====================
 
 async function handleGenFile(env, chatId, userId, userName) {
   const content = `这是本喵特意为你生成的文件，${userName}！\n用户ID：${userId}`;
