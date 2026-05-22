@@ -1,3 +1,5 @@
+// src/index.js
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== 'POST') {
@@ -35,8 +37,6 @@ export default {
         } else if (text === '/help') {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
             '<b>可用命令</b>\n/start - 开始使用\n/genfile - 生成示例文件\n/rank - 查看使用排行\n/help - 显示帮助\n\n转发频道消息即可生成文件。');
-        } else {
-          // 忽略普通文字
         }
       }
 
@@ -377,6 +377,11 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     if (choice === 'yes') {
       try {
         const email = env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory';
+        
+        // ===== 调试：发送邮箱信息 =====
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
+          `[DEBUG] 读取到的邮箱变量值：\n<code>${escapeHtml(email)}</code>\n长度：${email.length}`);
+        
         translatedText = await translateTextViaMyMemory(originalText, email);
         fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
       } catch (e) {
