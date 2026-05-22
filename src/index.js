@@ -273,7 +273,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     groupData.timerStarted = true;
     ctx.waitUntil(new Promise(resolve => setTimeout(async () => {
       const finalData = await kv.get(mediaGroupId, { type: 'json' });
-      if (finalData) await sendFileSelectionWithFormat(env.TELEGRAM_BOT_TOKEN, finalData.chatId, mediaGroupId, finalData);
+      if (finalData) await sendFileSelection(env.TELEGRAM_BOT_TOKEN, finalData.chatId, mediaGroupId, finalData);
       resolve();
     }, 1500)));
   }
@@ -281,20 +281,17 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   return true;
 }
 
-async function sendFileSelectionWithFormat(token, chatId, mediaGroupId, groupData) {
-  const inlineKeyboard = [];
-  groupData.files.forEach((file, i) => {
-    inlineKeyboard.push([
-      { text: `${file.title}.txt`, callback_data: `select_file:${mediaGroupId}:${i}:txt` },
-      { text: `${file.title}.md`, callback_data: `select_file:${mediaGroupId}:${i}:md` }
-    ]);
-  });
+// 第一步：选择文件（只显示文件名）
+async function sendFileSelection(token, chatId, mediaGroupId, groupData) {
+  const inlineKeyboard = groupData.files.map((file, i) => [
+    { text: file.title, callback_data: `select_file:${mediaGroupId}:${i}` }
+  ]);
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       chat_id: chatId,
-      text: '选择文件及格式：',
+      text: '选择要导出的文件：',
       reply_markup: { inline_keyboard: inlineKeyboard }
     })
   });
@@ -356,7 +353,6 @@ const LANG_OPTIONS = [
   { code: 'es', name: 'Español' },
   { code: 'pt', name: 'Português' },
   { code: 'it', name: 'Italiano' },
-  // 可根据需要添加更多
 ];
 
 // ==================== 回调查询处理 ====================
@@ -367,7 +363,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   const messageId = msg.message_id;
   const fromUser = callbackQuery.from;
 
-  // 用户选择了源语言，正式翻译
+  // 最终翻译：用户选了源语言
   if (data.startsWith('source_lang:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -405,14 +401,13 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // 用户选择“翻译为简体中文”，弹出源语言选择
+  // 选择源语言键盘（和之前一样）
   if (data.startsWith('translate_choice:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
     const choice = parts[2];
 
     if (choice === 'no') {
-      // 不翻译，直接生成原文
       const pendingData = await getPendingForward(env, pendingId);
       if (!pendingData) {
         await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '请求已过期，请重新转发。');
@@ -429,24 +424,16 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       return;
     }
 
-    // choice === 'yes'，构建源语言键盘
+    // 构建源语言键盘
     const inlineKeyboard = [];
-    // 每行两个语言按钮
     for (let i = 0; i < LANG_OPTIONS.length; i += 2) {
       const row = [];
-      row.push({
-        text: LANG_OPTIONS[i].name,
-        callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i].code}`
-      });
+      row.push({ text: LANG_OPTIONS[i].name, callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i].code}` });
       if (i + 1 < LANG_OPTIONS.length) {
-        row.push({
-          text: LANG_OPTIONS[i + 1].name,
-          callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i + 1].code}`
-        });
+        row.push({ text: LANG_OPTIONS[i + 1].name, callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i + 1].code}` });
       }
       inlineKeyboard.push(row);
     }
-
     await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
       '请选择原文语言：',
       { inline_keyboard: inlineKeyboard }
@@ -454,12 +441,40 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // 媒体组文件选择 → 询问翻译
+  // 媒体组：格式选择（第二步：选完文件后选格式）
+  if (data.startsWith('select_media_format:')) {
+    const parts = data.split(':');
+    const pendingId = parts[1];
+    const format = parts[2];
+
+    const pendingData = await getPendingForward(env, pendingId);
+    if (!pendingData) {
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '请求已过期，请重新转发。');
+      return;
+    }
+
+    pendingData.format = format;
+    await storePendingForward(env, pendingId, pendingData);
+
+    // 询问翻译
+    const inlineKeyboard = [
+      [
+        { text: '翻译为简体中文', callback_data: `translate_choice:${pendingId}:yes` },
+        { text: '保留原文', callback_data: `translate_choice:${pendingId}:no` }
+      ]
+    ];
+    await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
+      `已选择 ${pendingData.title}.${format}，是否翻译为简体中文？`,
+      { inline_keyboard: inlineKeyboard }
+    );
+    return;
+  }
+
+  // 媒体组：文件选择（第一步）
   if (data.startsWith('select_file:')) {
     const parts = data.split(':');
     const mediaGroupId = parts[1];
     const fileIndex = parseInt(parts[2]);
-    const format = parts[3];
 
     const kv = env.MEDIA_GROUP_CAPTIONS;
     const groupData = await kv.get(mediaGroupId, { type: 'json' });
@@ -471,6 +486,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     const file = groupData.files[fileIndex];
     const safeTitle = sanitizeFilename(file.title);
     const originalText = groupData.caption || '';
+
     const pendingId = `${chatId}_${Date.now()}`;
     const pendingData = {
       chatId: chatId,
@@ -479,19 +495,20 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       forwardDate: groupData.forwardDate,
       originalText: originalText,
       fromUser: fromUser,
-      format: format
     };
     await storePendingForward(env, pendingId, pendingData);
+    // 清理媒体组数据
     await kv.delete(mediaGroupId);
 
+    // 弹出格式选择
     const inlineKeyboard = [
       [
-        { text: '翻译为简体中文', callback_data: `translate_choice:${pendingId}:yes` },
-        { text: '保留原文', callback_data: `translate_choice:${pendingId}:no` }
+        { text: 'TXT', callback_data: `select_media_format:${pendingId}:txt` },
+        { text: 'MD', callback_data: `select_media_format:${pendingId}:md` }
       ]
     ];
     await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
-      `已选择 ${safeTitle}.${format}，是否翻译为简体中文？`,
+      `已选择 ${safeTitle}，选择导出格式：`,
       { inline_keyboard: inlineKeyboard }
     );
     return;
