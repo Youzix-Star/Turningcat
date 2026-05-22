@@ -167,8 +167,10 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
   });
 }
 
-// ==================== 翻译 ====================
-async function translateTextViaMyMemory(text, sourceLang, email) {
+// ==================== 翻译服务 ====================
+
+// 主翻译：MyMemory
+async function translateMyMemory(text, sourceLang, email) {
   const MAX_CHARS = 500;
   let textToTranslate = text;
   let truncated = false;
@@ -178,26 +180,67 @@ async function translateTextViaMyMemory(text, sourceLang, email) {
   }
   const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=${sourceLang}|zh-CN&de=${encodeURIComponent(email)}`;
 
-  let resp, data;
-  try {
-    resp = await fetch(url);
-    data = await resp.json();
-  } catch (e) {
-    throw new Error(`网络请求失败: ${e.message}`);
-  }
+  const resp = await fetch(url);
+  const data = await resp.json();
 
   if (data.responseStatus !== 200) {
-    throw new Error(`API 返回错误: ${JSON.stringify(data)}`);
+    throw new Error(`MyMemory 错误: ${data.responseDetails || JSON.stringify(data)}`);
   }
   if (!data.responseData || !data.responseData.translatedText) {
-    throw new Error(`翻译数据异常: ${JSON.stringify(data)}`);
+    throw new Error('MyMemory 返回空翻译');
   }
-
   let translated = data.responseData.translatedText;
   if (truncated) {
     translated += '\n\n[原文超过500字符，已截断翻译]';
   }
   return translated;
+}
+
+// 备选翻译：Lingva (基于 Google 翻译的代理)
+async function translateLingva(text, sourceLang) {
+  // Lingva 目标语言为 zh（简体中文）
+  const targetLang = 'zh';
+  const MAX_CHARS = 2000; // Lingva 限制较少，但为安全仍保留上限
+  let textToTranslate = text;
+  let truncated = false;
+  if (text.length > MAX_CHARS) {
+    textToTranslate = text.substring(0, MAX_CHARS);
+    truncated = true;
+  }
+  const url = `https://lingva.ml/api/v1/${encodeURIComponent(sourceLang)}/${targetLang}/${encodeURIComponent(textToTranslate)}`;
+
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(`Lingva 请求失败 (${resp.status})`);
+  }
+  const data = await resp.json();
+  if (!data.translation) {
+    throw new Error('Lingva 返回空翻译');
+  }
+  let translated = data.translation;
+  if (truncated) {
+    translated += '\n\n[原文超过2000字符，已截断翻译]';
+  }
+  return translated;
+}
+
+// 统一翻译入口，自动切换
+async function translateText(text, sourceLang, email) {
+  // 先尝试 MyMemory
+  try {
+    const result = await translateMyMemory(text, sourceLang, email);
+    return { text: result, used: 'MyMemory' };
+  } catch (e) {
+    console.log('MyMemory 失败，尝试 Lingva:', e.message);
+  }
+
+  // 备用 Lingva
+  try {
+    const result = await translateLingva(text, sourceLang);
+    return { text: result, used: 'Lingva (备用)' };
+  } catch (e) {
+    throw new Error(`所有翻译服务均失败。MyMemory: 不可用; Lingva: ${e.message}`);
+  }
 }
 
 // ==================== 文件内容生成 ====================
@@ -378,14 +421,19 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
     let translatedText = null;
     let fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
+    let usedService = '';
 
     try {
       const email = (env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory').trim();
+      
+      const result = await translateText(originalText, sourceLang, email);
+      translatedText = result.text;
+      usedService = result.used;
+      
       // 调试信息
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-        `[DEBUG] 邮箱：${escapeHtml(email)} (长度${email.length})\n源语言：${escapeHtml(sourceLang)}`);
+        `[DEBUG] 翻译服务：${usedService}\n源语言：${escapeHtml(sourceLang)}`);
 
-      translatedText = await translateTextViaMyMemory(originalText, sourceLang, email);
       fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
     } catch (e) {
       await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, `翻译失败：${e.message}`);
@@ -401,7 +449,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // 选择源语言键盘（和之前一样）
+  // 选择源语言键盘
   if (data.startsWith('translate_choice:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -441,7 +489,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // 媒体组：格式选择（第二步：选完文件后选格式）
+  // 媒体组：格式选择（第二步）
   if (data.startsWith('select_media_format:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -456,7 +504,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     pendingData.format = format;
     await storePendingForward(env, pendingId, pendingData);
 
-    // 询问翻译
     const inlineKeyboard = [
       [
         { text: '翻译为简体中文', callback_data: `translate_choice:${pendingId}:yes` },
@@ -497,10 +544,8 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       fromUser: fromUser,
     };
     await storePendingForward(env, pendingId, pendingData);
-    // 清理媒体组数据
     await kv.delete(mediaGroupId);
 
-    // 弹出格式选择
     const inlineKeyboard = [
       [
         { text: 'TXT', callback_data: `select_media_format:${pendingId}:txt` },
