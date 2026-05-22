@@ -49,12 +49,7 @@ export default {
 };
 
 // ==================== 备用语录 ====================
-const DEFAULT_QUOTES = [
-  "文件已生成。",
-  "导出完成。",
-  "已处理。",
-  "完成。"
-];
+const DEFAULT_QUOTES = ["文件已生成。", "导出完成。", "已处理。", "完成。"];
 
 async function getRandomQuote(env) {
   const kv = env.USER_STATS_KV;
@@ -173,7 +168,7 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
 }
 
 // ==================== 翻译 ====================
-async function translateTextViaMyMemory(text, email) {
+async function translateTextViaMyMemory(text, sourceLang, email) {
   const MAX_CHARS = 500;
   let textToTranslate = text;
   let truncated = false;
@@ -181,8 +176,8 @@ async function translateTextViaMyMemory(text, email) {
     textToTranslate = text.substring(0, MAX_CHARS);
     truncated = true;
   }
-  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=auto|zh-CN&de=${encodeURIComponent(email)}`;
-  
+  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=${sourceLang}|zh-CN&de=${encodeURIComponent(email)}`;
+
   let resp, data;
   try {
     resp = await fetch(url);
@@ -190,14 +185,14 @@ async function translateTextViaMyMemory(text, email) {
   } catch (e) {
     throw new Error(`网络请求失败: ${e.message}`);
   }
-  
+
   if (data.responseStatus !== 200) {
     throw new Error(`API 返回错误: ${JSON.stringify(data)}`);
   }
   if (!data.responseData || !data.responseData.translatedText) {
     throw new Error(`翻译数据异常: ${JSON.stringify(data)}`);
   }
-  
+
   let translated = data.responseData.translatedText;
   if (truncated) {
     translated += '\n\n[原文超过500字符，已截断翻译]';
@@ -208,7 +203,7 @@ async function translateTextViaMyMemory(text, email) {
 // ==================== 文件内容生成 ====================
 function generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText = null) {
   const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '(私有频道)';
-  
+
   if (format === 'md') {
     let body;
     if (translatedText) {
@@ -350,6 +345,20 @@ async function handleForwardedMessage(msg, env, ctx) {
   });
 }
 
+// ==================== 源语言列表 ====================
+const LANG_OPTIONS = [
+  { code: 'en', name: 'English' },
+  { code: 'ja', name: '日本語' },
+  { code: 'ko', name: '한국어' },
+  { code: 'fr', name: 'Français' },
+  { code: 'de', name: 'Deutsch' },
+  { code: 'ru', name: 'Русский' },
+  { code: 'es', name: 'Español' },
+  { code: 'pt', name: 'Português' },
+  { code: 'it', name: 'Italiano' },
+  // 可根据需要添加更多
+];
+
 // ==================== 回调查询处理 ====================
 async function handleCallbackQuery(callbackQuery, env, ctx) {
   const data = callbackQuery.data;
@@ -358,11 +367,11 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   const messageId = msg.message_id;
   const fromUser = callbackQuery.from;
 
-  // 翻译选择
-  if (data.startsWith('translate_choice:')) {
+  // 用户选择了源语言，正式翻译
+  if (data.startsWith('source_lang:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
-    const choice = parts[2];
+    const sourceLang = parts[2];
 
     const pendingData = await getPendingForward(env, pendingId);
     if (!pendingData) {
@@ -374,21 +383,17 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     let translatedText = null;
     let fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
 
-    if (choice === 'yes') {
-      try {
-        // 关键：trim() 去除变量前后空格
-        const email = (env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory').trim();
-        
-        // ===== 调试：发送邮箱信息 =====
-        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-          `[DEBUG] 读取到的邮箱变量值：\n<code>${escapeHtml(email)}</code>\n长度：${email.length}`);
-        
-        translatedText = await translateTextViaMyMemory(originalText, email);
-        fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
-      } catch (e) {
-        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, `翻译失败：${e.message}`);
-        return;
-      }
+    try {
+      const email = (env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory').trim();
+      // 调试信息
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
+        `[DEBUG] 邮箱：${escapeHtml(email)} (长度${email.length})\n源语言：${escapeHtml(sourceLang)}`);
+
+      translatedText = await translateTextViaMyMemory(originalText, sourceLang, email);
+      fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
+    } catch (e) {
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, `翻译失败：${e.message}`);
+      return;
     }
 
     const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText);
@@ -397,6 +402,55 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     await incrementUserStat(env, fromUser);
     await deletePendingForward(env, pendingId);
     await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+    return;
+  }
+
+  // 用户选择“翻译为简体中文”，弹出源语言选择
+  if (data.startsWith('translate_choice:')) {
+    const parts = data.split(':');
+    const pendingId = parts[1];
+    const choice = parts[2];
+
+    if (choice === 'no') {
+      // 不翻译，直接生成原文
+      const pendingData = await getPendingForward(env, pendingId);
+      if (!pendingData) {
+        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '请求已过期，请重新转发。');
+        return;
+      }
+      const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
+      const content = generateFileContent(format, title, forwardChat, forwardDate, originalText);
+      const quote = await getRandomQuote(env);
+      const fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
+      await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
+      await incrementUserStat(env, fromUser);
+      await deletePendingForward(env, pendingId);
+      await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+      return;
+    }
+
+    // choice === 'yes'，构建源语言键盘
+    const inlineKeyboard = [];
+    // 每行两个语言按钮
+    for (let i = 0; i < LANG_OPTIONS.length; i += 2) {
+      const row = [];
+      row.push({
+        text: LANG_OPTIONS[i].name,
+        callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i].code}`
+      });
+      if (i + 1 < LANG_OPTIONS.length) {
+        row.push({
+          text: LANG_OPTIONS[i + 1].name,
+          callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i + 1].code}`
+        });
+      }
+      inlineKeyboard.push(row);
+    }
+
+    await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
+      '请选择原文语言：',
+      { inline_keyboard: inlineKeyboard }
+    );
     return;
   }
 
