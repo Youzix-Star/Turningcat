@@ -169,7 +169,7 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
 
 // ==================== 翻译服务 ====================
 
-// 主翻译：MyMemory
+// MyMemory 翻译
 async function translateMyMemory(text, sourceLang, email) {
   const MAX_CHARS = 500;
   let textToTranslate = text;
@@ -196,11 +196,10 @@ async function translateMyMemory(text, sourceLang, email) {
   return translated;
 }
 
-// 备选翻译：Lingva (基于 Google 翻译的代理)
+// Lingva 翻译（源语言可为 auto）
 async function translateLingva(text, sourceLang) {
-  // Lingva 目标语言为 zh（简体中文）
   const targetLang = 'zh';
-  const MAX_CHARS = 2000; // Lingva 限制较少，但为安全仍保留上限
+  const MAX_CHARS = 2000;
   let textToTranslate = text;
   let truncated = false;
   if (text.length > MAX_CHARS) {
@@ -222,25 +221,6 @@ async function translateLingva(text, sourceLang) {
     translated += '\n\n[原文超过2000字符，已截断翻译]';
   }
   return translated;
-}
-
-// 统一翻译入口，自动切换
-async function translateText(text, sourceLang, email) {
-  // 先尝试 MyMemory
-  try {
-    const result = await translateMyMemory(text, sourceLang, email);
-    return { text: result, used: 'MyMemory' };
-  } catch (e) {
-    console.log('MyMemory 失败，尝试 Lingva:', e.message);
-  }
-
-  // 备用 Lingva
-  try {
-    const result = await translateLingva(text, sourceLang);
-    return { text: result, used: 'Lingva (备用)' };
-  } catch (e) {
-    throw new Error(`所有翻译服务均失败。MyMemory: 不可用; Lingva: ${e.message}`);
-  }
 }
 
 // ==================== 文件内容生成 ====================
@@ -406,7 +386,74 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   const messageId = msg.message_id;
   const fromUser = callbackQuery.from;
 
-  // 最终翻译：用户选了源语言
+  // ---------- 翻译服务选择 ----------
+  if (data.startsWith('translate_service:')) {
+    const parts = data.split(':');
+    const pendingId = parts[1];
+    const service = parts[2]; // 'my', 'lv', 'no'
+
+    const pendingData = await getPendingForward(env, pendingId);
+    if (!pendingData) {
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '请求已过期，请重新转发。');
+      return;
+    }
+
+    if (service === 'no') {
+      // 不翻译，直接生成原文
+      const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
+      const content = generateFileContent(format, title, forwardChat, forwardDate, originalText);
+      const quote = await getRandomQuote(env);
+      const fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
+      await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
+      await incrementUserStat(env, fromUser);
+      await deletePendingForward(env, pendingId);
+      await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+      return;
+    }
+
+    if (service === 'my') {
+      // MyMemory：需要选择源语言
+      pendingData.service = 'my';
+      await storePendingForward(env, pendingId, pendingData);
+
+      const inlineKeyboard = [];
+      for (let i = 0; i < LANG_OPTIONS.length; i += 2) {
+        const row = [];
+        row.push({ text: LANG_OPTIONS[i].name, callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i].code}` });
+        if (i + 1 < LANG_OPTIONS.length) {
+          row.push({ text: LANG_OPTIONS[i + 1].name, callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i + 1].code}` });
+        }
+        inlineKeyboard.push(row);
+      }
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
+        '请选择原文语言（MyMemory 翻译）：',
+        { inline_keyboard: inlineKeyboard }
+      );
+      return;
+    }
+
+    if (service === 'lv') {
+      // Lingva：自动检测源语言，直接翻译
+      try {
+        const translatedText = await translateLingva(pendingData.originalText, 'auto');
+        const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
+        const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText);
+        const quote = await getRandomQuote(env);
+        const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
+        await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
+          `[DEBUG] 翻译服务：Lingva (自动检测源语言)`);
+        await incrementUserStat(env, fromUser);
+        await deletePendingForward(env, pendingId);
+        await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+      } catch (e) {
+        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, `Lingva 翻译失败：${e.message}`);
+      }
+      return;
+    }
+  }
+
+  // ---------- 选择源语言后翻译（仅 MyMemory） ----------
   if (data.startsWith('source_lang:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -421,20 +468,14 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
     let translatedText = null;
     let fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
-    let usedService = '';
+    let usedService = 'MyMemory';
 
     try {
       const email = (env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory').trim();
-      
-      const result = await translateText(originalText, sourceLang, email);
-      translatedText = result.text;
-      usedService = result.used;
-      
-      // 调试信息
-      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-        `[DEBUG] 翻译服务：${usedService}\n源语言：${escapeHtml(sourceLang)}`);
-
+      translatedText = await translateMyMemory(originalText, sourceLang, email);
       fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
+        `[DEBUG] 翻译服务：MyMemory\n源语言：${escapeHtml(sourceLang)}`);
     } catch (e) {
       await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, `翻译失败：${e.message}`);
       return;
@@ -449,47 +490,8 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // 选择源语言键盘
-  if (data.startsWith('translate_choice:')) {
-    const parts = data.split(':');
-    const pendingId = parts[1];
-    const choice = parts[2];
-
-    if (choice === 'no') {
-      const pendingData = await getPendingForward(env, pendingId);
-      if (!pendingData) {
-        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '请求已过期，请重新转发。');
-        return;
-      }
-      const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
-      const content = generateFileContent(format, title, forwardChat, forwardDate, originalText);
-      const quote = await getRandomQuote(env);
-      const fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
-      await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
-      await incrementUserStat(env, fromUser);
-      await deletePendingForward(env, pendingId);
-      await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
-      return;
-    }
-
-    // 构建源语言键盘
-    const inlineKeyboard = [];
-    for (let i = 0; i < LANG_OPTIONS.length; i += 2) {
-      const row = [];
-      row.push({ text: LANG_OPTIONS[i].name, callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i].code}` });
-      if (i + 1 < LANG_OPTIONS.length) {
-        row.push({ text: LANG_OPTIONS[i + 1].name, callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i + 1].code}` });
-      }
-      inlineKeyboard.push(row);
-    }
-    await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
-      '请选择原文语言：',
-      { inline_keyboard: inlineKeyboard }
-    );
-    return;
-  }
-
-  // 媒体组：格式选择（第二步）
+  // ---------- 格式选择后询问“翻译服务” ----------
+  // 媒体组：格式选择后
   if (data.startsWith('select_media_format:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -500,20 +502,28 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '请求已过期，请重新转发。');
       return;
     }
-
     pendingData.format = format;
     await storePendingForward(env, pendingId, pendingData);
 
-    const inlineKeyboard = [
-      [
-        { text: '翻译为简体中文', callback_data: `translate_choice:${pendingId}:yes` },
-        { text: '保留原文', callback_data: `translate_choice:${pendingId}:no` }
-      ]
-    ];
-    await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
-      `已选择 ${pendingData.title}.${format}，是否翻译为简体中文？`,
-      { inline_keyboard: inlineKeyboard }
-    );
+    await askTranslateService(env.TELEGRAM_BOT_TOKEN, chatId, messageId, pendingId);
+    return;
+  }
+
+  // 单文件：格式选择后
+  if (data.startsWith('pending_format:')) {
+    const parts = data.split(':');
+    const pendingId = parts[1];
+    const format = parts[2];
+
+    const pendingData = await getPendingForward(env, pendingId);
+    if (!pendingData) {
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '请求已过期，请重新转发。');
+      return;
+    }
+    pendingData.format = format;
+    await storePendingForward(env, pendingId, pendingData);
+
+    await askTranslateService(env.TELEGRAM_BOT_TOKEN, chatId, messageId, pendingId);
     return;
   }
 
@@ -558,34 +568,25 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     );
     return;
   }
+}
 
-  // 单文件格式选择 → 询问翻译
-  if (data.startsWith('pending_format:')) {
-    const parts = data.split(':');
-    const pendingId = parts[1];
-    const format = parts[2];
-
-    const pendingData = await getPendingForward(env, pendingId);
-    if (!pendingData) {
-      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '请求已过期，请重新转发。');
-      return;
-    }
-
-    pendingData.format = format;
-    await storePendingForward(env, pendingId, pendingData);
-
-    const inlineKeyboard = [
-      [
-        { text: '翻译为简体中文', callback_data: `translate_choice:${pendingId}:yes` },
-        { text: '保留原文', callback_data: `translate_choice:${pendingId}:no` }
-      ]
-    ];
-    await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
-      `已选择 ${format.toUpperCase()} 格式，是否翻译为简体中文？`,
-      { inline_keyboard: inlineKeyboard }
-    );
-    return;
-  }
+// 弹出翻译服务选择键盘
+async function askTranslateService(token, chatId, messageId, pendingId) {
+  const inlineKeyboard = [
+    [
+      { text: 'MyMemory 翻译', callback_data: `translate_service:${pendingId}:my` },
+    ],
+    [
+      { text: 'Lingva 翻译 (自动)', callback_data: `translate_service:${pendingId}:lv` },
+    ],
+    [
+      { text: '保留原文', callback_data: `translate_service:${pendingId}:no` }
+    ]
+  ];
+  await editMessageText(token, chatId, messageId,
+    '选择翻译服务：',
+    { inline_keyboard: inlineKeyboard }
+  );
 }
 
 // ==================== 示例文件生成 ====================
