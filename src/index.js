@@ -141,6 +141,16 @@ async function sendTelegramMessage(token, chatId, text) {
   });
 }
 
+async function editMessageText(token, chatId, messageId, text, replyMarkup = null) {
+  const body = { chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' };
+  if (replyMarkup !== null) body.reply_markup = replyMarkup;
+  await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 function formatDate(timestamp) {
   const date = new Date((timestamp + 8 * 3600) * 1000);
   const pad = (n) => String(n).padStart(2, '0');
@@ -181,27 +191,52 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
   });
 }
 
+// ==================== 翻译模块（MyMemory 免费 API） ====================
+
+async function translateTextViaMyMemory(text, email) {
+  // MyMemory 单次最多 500 字符，超过则截断并提示
+  const MAX_CHARS = 500;
+  let textToTranslate = text;
+  let truncated = false;
+  if (text.length > MAX_CHARS) {
+    textToTranslate = text.substring(0, MAX_CHARS);
+    truncated = true;
+  }
+  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=auto|zh-CN&de=${encodeURIComponent(email)}`;
+  const resp = await fetch(url);
+  const data = await resp.json();
+  if (data.responseStatus !== 200) {
+    throw new Error('Translation API error');
+  }
+  let translated = data.responseData.translatedText;
+  if (truncated) {
+    translated += '\n\n[⚠️ 原文超过500字符，已自动截断翻译]';
+  }
+  return translated;
+}
+
 // ==================== 生成文件内容（支持格式） ====================
 
-function generateFileContent(format, title, forwardChat, forwardDate, originalText) {
+function generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText = null) {
   const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '（私有频道）';
   
   if (format === 'md') {
-    // Markdown 格式
-    const escapedOriginal = originalText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+    let body = '';
+    if (translatedText) {
+      const escapedOriginal = originalText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+      const escapedTranslated = translatedText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+      body = `## 📄 原文\n\n${escapedOriginal}\n\n---\n\n## 🌐 简体中文翻译\n\n${escapedTranslated}`;
+    } else {
+      const escapedOriginal = originalText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+      body = `## 📄 更新日志原文\n\n${escapedOriginal}`;
+    }
     return `# ${title}
 
 📢 **来源频道**：[${escapeHtml(forwardChat.title)}](${channelLink})
 
----
-
-## 📄 更新日志原文
-
-${escapedOriginal}
+${body}
 
 ---
-
-## 🐾 本喵碎碎念
 
 > 本喵只是无情的格式转换工具喵。
 
@@ -210,16 +245,20 @@ ${escapedOriginal}
 - 由 [@Turningcat_bot](https://t.me/Turningcat_bot) 生成
 `;
   } else {
-    // TXT 格式（保持原样）
-    return `${title}\n${channelLink}\n\n---\n\n【更新日志原文】\n${originalText}\n\n---\n\n【本喵碎碎念】\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n由 @Turningcat_bot 生成`;
+    // TXT 格式
+    if (translatedText) {
+      return `${title}\n${channelLink}\n\n---\n\n【原文】\n${originalText}\n\n---\n\n【简体中文翻译】\n${translatedText}\n\n---\n\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n由 @Turningcat_bot 生成`;
+    } else {
+      return `${title}\n${channelLink}\n\n---\n\n【更新日志原文】\n${originalText}\n\n---\n\n【本喵碎碎念】\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n由 @Turningcat_bot 生成`;
+    }
   }
 }
 
-// ==================== 临时存储单文件转发数据 ====================
+// ==================== 临时存储 ====================
 
 async function storePendingForward(env, key, data) {
-  const kv = env.MEDIA_GROUP_CAPTIONS; // 复用这个 KV，加上前缀
-  await kv.put(`pending:${key}`, JSON.stringify(data), { expirationTtl: 60 });
+  const kv = env.MEDIA_GROUP_CAPTIONS;
+  await kv.put(`pending:${key}`, JSON.stringify(data), { expirationTtl: 600 }); // 延长有效期
 }
 
 async function getPendingForward(env, key) {
@@ -267,7 +306,6 @@ async function handleMediaGroupMessage(msg, env, ctx) {
 async function sendFileSelectionWithFormat(token, chatId, mediaGroupId, groupData) {
   const inlineKeyboard = [];
   groupData.files.forEach((file, i) => {
-    // 每个文件生成两个按钮：TXT 和 MD
     inlineKeyboard.push([
       { text: `📄 ${file.title} (.txt)`, callback_data: `select_file:${mediaGroupId}:${i}:txt` },
       { text: `📝 ${file.title} (.md)`, callback_data: `select_file:${mediaGroupId}:${i}:md` }
@@ -297,7 +335,6 @@ async function handleForwardedMessage(msg, env, ctx) {
   let titleBase = msg.document ? getBaseName(msg.document.file_name) : originalText.split('\n')[0].trim();
   const safeTitle = sanitizeFilename(titleBase.substring(0, 50));
 
-  // 生成一个唯一 ID 用于临时存储
   const pendingId = `${msg.chat.id}_${Date.now()}`;
   const pendingData = {
     chatId: msg.chat.id,
@@ -309,7 +346,6 @@ async function handleForwardedMessage(msg, env, ctx) {
   };
   await storePendingForward(env, pendingId, pendingData);
 
-  // 发送内联键盘选择格式
   const inlineKeyboard = [
     [
       { text: '📄 生成 TXT 文件', callback_data: `pending_format:${pendingId}:txt` },
@@ -336,34 +372,90 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   const messageId = msg.message_id;
   const fromUser = callbackQuery.from;
 
-  // 处理媒体组文件选择（带格式）
+  // 处理翻译选择（是/否）
+  if (data.startsWith('translate_choice:')) {
+    const parts = data.split(':');
+    const pendingId = parts[1];
+    const choice = parts[2]; // 'yes' 或 'no'
+    
+    const pendingData = await getPendingForward(env, pendingId);
+    if (!pendingData) {
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '太久没选，本喵忘记刚才的请求了喵！');
+      return;
+    }
+
+    const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
+    let finalContent = '';
+    let fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
+    let translatedText = null;
+
+    if (choice === 'yes') {
+      try {
+        const email = env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory';
+        translatedText = await translateTextViaMyMemory(originalText, email);
+        // 翻译成功后文件名加入 -CN
+        fileName = `${title}-Log-CN.${format === 'md' ? 'md' : 'txt'}`;
+      } catch (e) {
+        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '呜…翻译失败喵，将为你生成原文文件。');
+        // 失败则继续使用原文
+      }
+    }
+
+    finalContent = generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText);
+    const quote = await getRandomQuote(env);
+    await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, finalContent, quote, format);
+    await incrementUserStat(env, fromUser);
+    await deletePendingForward(env, pendingId);
+    // 移除原先询问翻译的键盘
+    await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+    return;
+  }
+
+  // 处理媒体组文件选择 -> 转为 pending 并询问翻译
   if (data.startsWith('select_file:')) {
     const parts = data.split(':');
     const mediaGroupId = parts[1];
     const fileIndex = parseInt(parts[2]);
-    const format = parts[3]; // 'txt' 或 'md'
+    const format = parts[3];
     
     const kv = env.MEDIA_GROUP_CAPTIONS;
     const groupData = await kv.get(mediaGroupId, { type: 'json' });
     if (!groupData) {
-      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '数据过期了喵，重新转发一下吧！');
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '数据过期了喵，重新转发一下吧！');
       return;
     }
 
     const file = groupData.files[fileIndex];
     const safeTitle = sanitizeFilename(file.title);
-    const fileContent = generateFileContent(format, safeTitle, groupData.forwardFromChat, groupData.forwardDate, groupData.caption);
-    const quote = await getRandomQuote(env);
-    const fileName = `${safeTitle}-Log.${format === 'md' ? 'md' : 'txt'}`;
-
-    await sendDocument(env.TELEGRAM_BOT_TOKEN, groupData.chatId, fileName, fileContent, quote, format);
-    await incrementUserStat(env, fromUser);
-    await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+    const originalText = groupData.caption || '';
+    const pendingId = `${chatId}_${Date.now()}`;
+    const pendingData = {
+      chatId: chatId,
+      title: safeTitle,
+      forwardChat: groupData.forwardFromChat,
+      forwardDate: groupData.forwardDate,
+      originalText: originalText,
+      fromUser: fromUser,
+      format: format
+    };
+    await storePendingForward(env, pendingId, pendingData);
     await kv.delete(mediaGroupId);
+
+    // 询问翻译
+    const inlineKeyboard = [
+      [
+        { text: '✅ 是，翻译成简体中文', callback_data: `translate_choice:${pendingId}:yes` },
+        { text: '❌ 否，保留原文', callback_data: `translate_choice:${pendingId}:no` }
+      ]
+    ];
+    await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
+      `已选择「${safeTitle}」导出为 ${format.toUpperCase()}，要翻译成简体中文吗？`,
+      { inline_keyboard: inlineKeyboard }
+    );
     return;
   }
 
-  // 处理单文件格式选择
+  // 处理单文件格式选择 -> 转为 pending 并询问翻译
   if (data.startsWith('pending_format:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -371,20 +463,25 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     
     const pendingData = await getPendingForward(env, pendingId);
     if (!pendingData) {
-      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '太久没选，本喵忘记刚才的请求了喵！');
-      await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '太久没选，本喵忘记刚才的请求了喵！');
       return;
     }
 
-    const { title, forwardChat, forwardDate, originalText, fromUser } = pendingData;
-    const fileContent = generateFileContent(format, title, forwardChat, forwardDate, originalText);
-    const quote = await getRandomQuote(env);
-    const fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
+    // 更新 pendingData，加入 format 字段
+    pendingData.format = format;
+    await storePendingForward(env, pendingId, pendingData);
 
-    await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, fileContent, quote, format);
-    await incrementUserStat(env, fromUser);
-    await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
-    await deletePendingForward(env, pendingId);
+    // 询问翻译
+    const inlineKeyboard = [
+      [
+        { text: '✅ 是，翻译成简体中文', callback_data: `translate_choice:${pendingId}:yes` },
+        { text: '❌ 否，保留原文', callback_data: `translate_choice:${pendingId}:no` }
+      ]
+    ];
+    await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
+      `已选择导出为 ${format.toUpperCase()}，要翻译成简体中文吗？`,
+      { inline_keyboard: inlineKeyboard }
+    );
     return;
   }
 }
