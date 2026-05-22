@@ -1,5 +1,3 @@
-// src/index.js
-
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== 'POST') {
@@ -9,30 +7,24 @@ export default {
     try {
       const update = await request.json();
 
-      // 处理回调查询
       if (update.callback_query) {
         await handleCallbackQuery(update.callback_query, env, ctx);
         return new Response('OK', { status: 200 });
       }
 
-      // 处理消息
       if (update.message) {
         const msg = update.message;
         const chatId = msg.chat.id;
         const text = msg.text || '';
 
-        // 优先处理转发消息
         if (msg.forward_date) {
           await handleForwardedMessage(msg, env, ctx);
           return new Response('OK', { status: 200 });
         }
 
-        // 普通命令处理
         if (text === '/start') {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-            '啧，又来了一个想白嫖本喵劳动力的愚蠢人类吗？喵～\n\n' +
-            '听好了，本喵是<b>转向猫</b>。虽然很麻烦，但如果你转发频道消息给我，我就勉为其难帮你转成 TXT 或 MD 吧。\n' +
-            '想看本喵被压榨了多少次？发 /rank 看看那个令猫绝望的排行榜吧！');
+            '转发频道消息给我，即可导出为 TXT 或 MD 文件，并可选翻译为简体中文。\n\n/rank 查看使用次数排行\n/help 查看所有命令');
         } else if (text === '/genfile') {
           await incrementUserStat(env, msg.from);
           await handleGenFile(env, chatId, msg.from.id, msg.from.first_name);
@@ -42,39 +34,34 @@ export default {
           await handleAddQuote(msg, env);
         } else if (text === '/help') {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-            '📖 <b>给笨蛋铲屎官的说明书</b>\n\n' +
-            '• /start - 重新接受本喵的审视\n' +
-            '• /genfile - 没事找事让本喵动动爪子\n' +
-            '• /rank - 看看谁进贡的猫薄荷最多\n' +
-            '• /help - 记不住命令就多看几遍！');
+            '<b>可用命令</b>\n/start - 开始使用\n/genfile - 生成示例文件\n/rank - 查看使用排行\n/help - 显示帮助\n\n转发频道消息即可生成文件。');
         } else {
-          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `「${text}」？这种无聊的话就别发给本喵了喵！`);
+          // 忽略普通文字
         }
       }
 
       return new Response('OK', { status: 200 });
     } catch (error) {
-      console.error('猫猫 CPU 烧了：', error);
+      console.error('Error:', error);
       return new Response('Error', { status: 500 });
     }
   },
 };
 
-// ==================== 随机猫言猫语模块 ====================
-
+// ==================== 备用语录 ====================
 const DEFAULT_QUOTES = [
-  "哼，别以为本喵是想帮你，只是顺手而已！",
-  "拿去吧！下次自己打字，别总指望本喵！",
-  "要是里面有错别字，肯定是你长得太丑影响了本喵的发挥！",
-  "这份文件可是沾了本喵的仙气，你最好把它供起来！"
+  "文件已生成。",
+  "导出完成。",
+  "已处理。",
+  "完成。"
 ];
 
 async function getRandomQuote(env) {
   const kv = env.USER_STATS_KV;
   let quotes = DEFAULT_QUOTES;
   if (kv) {
-    const storedQuotes = await kv.get('cat_quotes', { type: 'json' });
-    if (storedQuotes && storedQuotes.length > 0) quotes = storedQuotes;
+    const stored = await kv.get('cat_quotes', { type: 'json' });
+    if (stored && stored.length > 0) quotes = stored;
   }
   return quotes[Math.floor(Math.random() * quotes.length)];
 }
@@ -82,7 +69,7 @@ async function getRandomQuote(env) {
 async function handleAddQuote(msg, env) {
   const adminId = env.ADMIN_ID;
   if (!adminId || msg.from.id.toString() !== adminId.toString()) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, "抓到一只想教本喵做事的笨蛋！你没有权限喵！");
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '无权限。');
     return;
   }
   const newQuote = msg.text.replace('/addquote', '').trim();
@@ -92,18 +79,17 @@ async function handleAddQuote(msg, env) {
   let quotes = await kv.get('cat_quotes', { type: 'json' }) || DEFAULT_QUOTES;
   quotes.push(newQuote);
   await kv.put('cat_quotes', JSON.stringify(quotes));
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `算你有品味，本喵记下了：“${newQuote}”`);
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `已添加语录：${newQuote}`);
 }
 
-// ==================== 猫薄荷进贡统计 ====================
-
+// ==================== 统计 ====================
 async function incrementUserStat(env, user) {
   const kv = env.USER_STATS_KV;
   if (!kv) return;
   try {
     let stats = await kv.get('global_leaderboard', { type: 'json' }) || {};
     const userId = user.id.toString();
-    const userName = user.first_name || user.username || '不知名的铲屎官';
+    const userName = user.first_name || user.username || '未知用户';
     if (!stats[userId]) stats[userId] = { name: userName, count: 0 };
     stats[userId].name = userName;
     stats[userId].count += 1;
@@ -116,19 +102,17 @@ async function handleRank(token, chatId, env) {
   let stats = kv ? await kv.get('global_leaderboard', { type: 'json' }) || {} : {};
   const sortedUsers = Object.values(stats).sort((a, b) => b.count - a.count);
   if (sortedUsers.length === 0) {
-    await sendTelegramMessage(token, chatId, '空荡荡的...看来还没人敢来麻烦本喵嘛。');
+    await sendTelegramMessage(token, chatId, '暂无使用数据。');
     return;
   }
-  let msg = '🌿 <b>猫薄荷进贡榜 (本喵的受难记录)</b> 🌿\n\n';
-  const icons = ['👑', '🥈', '🥉', '🐾', '🐾', '🐾', '🐾', '🐾', '🐾', '🐾'];
+  let msg = '<b>使用次数排行</b>\n';
   for (let i = 0; i < Math.min(sortedUsers.length, 10); i++) {
-    msg += `${icons[i]} <b>${sortedUsers[i].name}</b>：进贡了 ${sortedUsers[i].count} 袋猫薄荷\n`;
+    msg += `${i + 1}. ${sortedUsers[i].name}：${sortedUsers[i].count} 次\n`;
   }
-  await sendTelegramMessage(token, chatId, msg + '\n你们这些家伙...是不是想累死本喵喵？');
+  await sendTelegramMessage(token, chatId, msg);
 }
 
 // ==================== 工具函数 ====================
-
 function escapeHtml(text) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -172,14 +156,11 @@ async function sendDocument(token, chatId, fileName, content, quote, format = 't
   const formData = new FormData();
   formData.append('chat_id', chatId);
   formData.append('document', new Blob([content], { type: mimeType }), fileName);
-  
-  const captionText = `喏，你要的「<b>${escapeHtml(fileName)}</b>」拿走喵！\n\n🐾 <b>本喵碎碎念</b>：\n${escapeHtml(quote)}`;
-  formData.append('caption', captionText);
+  formData.append('caption', `${fileName}\n${quote}`);
   formData.append('parse_mode', 'HTML');
-  
   const response = await fetch(url, { method: 'POST', body: formData });
   if (!response.ok) {
-    await sendTelegramMessage(token, chatId, '呜…文件发送失败了喵！检查下名字是不是太怪了喵！');
+    await sendTelegramMessage(token, chatId, '文件发送失败，请重试。');
   }
 }
 
@@ -191,10 +172,8 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
   });
 }
 
-// ==================== 翻译模块（MyMemory 免费 API） ====================
-
+// ==================== 翻译 ====================
 async function translateTextViaMyMemory(text, email) {
-  // MyMemory 单次最多 500 字符，超过则截断并提示
   const MAX_CHARS = 500;
   let textToTranslate = text;
   let truncated = false;
@@ -203,91 +182,95 @@ async function translateTextViaMyMemory(text, email) {
     truncated = true;
   }
   const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=auto|zh-CN&de=${encodeURIComponent(email)}`;
-  const resp = await fetch(url);
-  const data = await resp.json();
-  if (data.responseStatus !== 200) {
-    throw new Error('Translation API error');
+  
+  let resp, data;
+  try {
+    resp = await fetch(url);
+    data = await resp.json();
+  } catch (e) {
+    throw new Error(`网络请求失败: ${e.message}`);
   }
+  
+  if (data.responseStatus !== 200) {
+    throw new Error(`API 返回错误: ${JSON.stringify(data)}`);
+  }
+  if (!data.responseData || !data.responseData.translatedText) {
+    throw new Error(`翻译数据异常: ${JSON.stringify(data)}`);
+  }
+  
   let translated = data.responseData.translatedText;
   if (truncated) {
-    translated += '\n\n[⚠️ 原文超过500字符，已自动截断翻译]';
+    translated += '\n\n[原文超过500字符，已截断翻译]';
   }
   return translated;
 }
 
-// ==================== 生成文件内容（支持格式） ====================
-
+// ==================== 文件内容生成 ====================
 function generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText = null) {
-  const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '（私有频道）';
+  const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '(私有频道)';
   
   if (format === 'md') {
-    let body = '';
+    let body;
     if (translatedText) {
-      const escapedOriginal = originalText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
-      const escapedTranslated = translatedText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
-      body = `## 📄 原文\n\n${escapedOriginal}\n\n---\n\n## 🌐 简体中文翻译\n\n${escapedTranslated}`;
+      const escOrig = originalText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+      const escTrans = translatedText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+      body = `## 原文\n\n${escOrig}\n\n## 简体中文\n\n${escTrans}`;
     } else {
-      const escapedOriginal = originalText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
-      body = `## 📄 更新日志原文\n\n${escapedOriginal}`;
+      const escOrig = originalText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+      body = `## 原文\n\n${escOrig}`;
     }
-    return `# ${title}
-
-📢 **来源频道**：[${escapeHtml(forwardChat.title)}](${channelLink})
-
-${body}
-
----
-
-> 本喵只是无情的格式转换工具喵。
-
-- **转发时间**：${formatDate(forwardDate)}  
-- **生成时间**：${formatDate(Math.floor(Date.now()/1000))}  
-- 由 [@Turningcat_bot](https://t.me/Turningcat_bot) 生成
-`;
+    return `# ${title}\n\n来源：${channelLink}\n\n${body}\n\n---\n转发时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n`;
   } else {
-    // TXT 格式
     if (translatedText) {
-      return `${title}\n${channelLink}\n\n---\n\n【原文】\n${originalText}\n\n---\n\n【简体中文翻译】\n${translatedText}\n\n---\n\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n由 @Turningcat_bot 生成`;
+      return `${title}\n${channelLink}\n\n【原文】\n${originalText}\n\n【简体中文】\n${translatedText}\n\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}`;
     } else {
-      return `${title}\n${channelLink}\n\n---\n\n【更新日志原文】\n${originalText}\n\n---\n\n【本喵碎碎念】\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n由 @Turningcat_bot 生成`;
+      return `${title}\n${channelLink}\n\n【原文】\n${originalText}\n\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}`;
     }
   }
 }
 
 // ==================== 临时存储 ====================
-
 async function storePendingForward(env, key, data) {
-  const kv = env.MEDIA_GROUP_CAPTIONS;
-  await kv.put(`pending:${key}`, JSON.stringify(data), { expirationTtl: 600 }); // 延长有效期
+  await env.MEDIA_GROUP_CAPTIONS.put(`pending:${key}`, JSON.stringify(data), { expirationTtl: 600 });
 }
 
 async function getPendingForward(env, key) {
-  const kv = env.MEDIA_GROUP_CAPTIONS;
-  const data = await kv.get(`pending:${key}`, { type: 'json' });
-  return data;
+  return await env.MEDIA_GROUP_CAPTIONS.get(`pending:${key}`, { type: 'json' });
 }
 
 async function deletePendingForward(env, key) {
-  const kv = env.MEDIA_GROUP_CAPTIONS;
-  await kv.delete(`pending:${key}`);
+  await env.MEDIA_GROUP_CAPTIONS.delete(`pending:${key}`);
 }
 
 // ==================== 媒体组处理 ====================
-
 async function handleMediaGroupMessage(msg, env, ctx) {
   const mediaGroupId = msg.media_group_id;
   if (!mediaGroupId) return false;
   const kv = env.MEDIA_GROUP_CAPTIONS;
   let groupData = await kv.get(mediaGroupId, { type: 'json' }) || {
-    files: [], caption: '', chatId: msg.chat.id, 
-    forwardFromChat: msg.forward_from_chat ? { title: msg.forward_from_chat.title, username: msg.forward_from_chat.username } : null,
-    forwardDate: msg.forward_date, timerStarted: false
+    files: [],
+    caption: '',
+    chatId: msg.chat.id,
+    forwardFromChat: msg.forward_from_chat ? {
+      title: msg.forward_from_chat.title,
+      username: msg.forward_from_chat.username
+    } : null,
+    forwardDate: msg.forward_date,
+    timerStarted: false
   };
 
   if (msg.document) {
-    groupData.files.push({ file_name: msg.document.file_name, title: getBaseName(msg.document.file_name), file_id: msg.document.file_id });
+    groupData.files.push({
+      file_name: msg.document.file_name,
+      title: getBaseName(msg.document.file_name),
+      file_id: msg.document.file_id
+    });
   } else if (msg.photo) {
-    groupData.files.push({ file_name: 'photo.jpg', title: '这张照片', file_id: msg.photo[msg.photo.length - 1].file_id });
+    groupData.files.push({
+      file_name: 'photo.jpg',
+      title: '图片',
+      file_id: msg.photo[msg.photo.length - 1].file_id
+    });
   }
   if (msg.caption) groupData.caption = msg.caption;
 
@@ -307,28 +290,32 @@ async function sendFileSelectionWithFormat(token, chatId, mediaGroupId, groupDat
   const inlineKeyboard = [];
   groupData.files.forEach((file, i) => {
     inlineKeyboard.push([
-      { text: `📄 ${file.title} (.txt)`, callback_data: `select_file:${mediaGroupId}:${i}:txt` },
-      { text: `📝 ${file.title} (.md)`, callback_data: `select_file:${mediaGroupId}:${i}:md` }
+      { text: `${file.title}.txt`, callback_data: `select_file:${mediaGroupId}:${i}:txt` },
+      { text: `${file.title}.md`, callback_data: `select_file:${mediaGroupId}:${i}:md` }
     ]);
   });
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text: '这么多文件，快点选一个喵！想要 TXT 还是 MD？', reply_markup: { inline_keyboard: inlineKeyboard } })
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: '选择文件及格式：',
+      reply_markup: { inline_keyboard: inlineKeyboard }
+    })
   });
 }
 
-// ==================== 单文件转发处理（带格式选择） ====================
-
+// ==================== 单文件转发处理 ====================
 async function handleForwardedMessage(msg, env, ctx) {
   if (msg.media_group_id && await handleMediaGroupMessage(msg, env, ctx)) return;
+
   if (!msg.forward_from_chat) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '哼！本喵只处理来自频道的转发消息！');
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '仅支持从频道转发的消息。');
     return;
   }
   const originalText = msg.text || msg.caption || '';
   if (!originalText) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '连个字都没有，本喵没法干活喵！');
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '消息无文字内容。');
     return;
   }
 
@@ -348,8 +335,8 @@ async function handleForwardedMessage(msg, env, ctx) {
 
   const inlineKeyboard = [
     [
-      { text: '📄 生成 TXT 文件', callback_data: `pending_format:${pendingId}:txt` },
-      { text: '📝 生成 MD 文件', callback_data: `pending_format:${pendingId}:md` }
+      { text: '导出 TXT', callback_data: `pending_format:${pendingId}:txt` },
+      { text: '导出 MD', callback_data: `pending_format:${pendingId}:md` }
     ]
   ];
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -357,14 +344,13 @@ async function handleForwardedMessage(msg, env, ctx) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       chat_id: msg.chat.id,
-      text: `收到来自「${escapeHtml(msg.forward_from_chat.title)}」的转发，要导出什么格式喵？`,
+      text: '选择导出格式：',
       reply_markup: { inline_keyboard: inlineKeyboard }
     })
   });
 }
 
 // ==================== 回调查询处理 ====================
-
 async function handleCallbackQuery(callbackQuery, env, ctx) {
   const data = callbackQuery.data;
   const msg = callbackQuery.message;
@@ -372,56 +358,53 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   const messageId = msg.message_id;
   const fromUser = callbackQuery.from;
 
-  // 处理翻译选择（是/否）
+  // 翻译选择
   if (data.startsWith('translate_choice:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
-    const choice = parts[2]; // 'yes' 或 'no'
-    
+    const choice = parts[2];
+
     const pendingData = await getPendingForward(env, pendingId);
     if (!pendingData) {
-      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '太久没选，本喵忘记刚才的请求了喵！');
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '请求已过期，请重新转发。');
       return;
     }
 
     const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
-    let finalContent = '';
-    let fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
     let translatedText = null;
+    let fileName = `${title}-${format === 'md' ? 'Log.md' : 'Log.txt'}`;
 
     if (choice === 'yes') {
       try {
         const email = env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory';
         translatedText = await translateTextViaMyMemory(originalText, email);
-        // 翻译成功后文件名加入 -CN
-        fileName = `${title}-Log-CN.${format === 'md' ? 'md' : 'txt'}`;
+        fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
       } catch (e) {
-        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '呜…翻译失败喵，将为你生成原文文件。');
-        // 失败则继续使用原文
+        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, `翻译失败：${e.message}`);
+        return;
       }
     }
 
-    finalContent = generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText);
+    const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText);
     const quote = await getRandomQuote(env);
-    await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, finalContent, quote, format);
+    await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
     await incrementUserStat(env, fromUser);
     await deletePendingForward(env, pendingId);
-    // 移除原先询问翻译的键盘
     await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
     return;
   }
 
-  // 处理媒体组文件选择 -> 转为 pending 并询问翻译
+  // 媒体组文件选择 → 询问翻译
   if (data.startsWith('select_file:')) {
     const parts = data.split(':');
     const mediaGroupId = parts[1];
     const fileIndex = parseInt(parts[2]);
     const format = parts[3];
-    
+
     const kv = env.MEDIA_GROUP_CAPTIONS;
     const groupData = await kv.get(mediaGroupId, { type: 'json' });
     if (!groupData) {
-      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '数据过期了喵，重新转发一下吧！');
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '数据已过期，请重新转发。');
       return;
     }
 
@@ -441,55 +424,51 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     await storePendingForward(env, pendingId, pendingData);
     await kv.delete(mediaGroupId);
 
-    // 询问翻译
     const inlineKeyboard = [
       [
-        { text: '✅ 是，翻译成简体中文', callback_data: `translate_choice:${pendingId}:yes` },
-        { text: '❌ 否，保留原文', callback_data: `translate_choice:${pendingId}:no` }
+        { text: '翻译为简体中文', callback_data: `translate_choice:${pendingId}:yes` },
+        { text: '保留原文', callback_data: `translate_choice:${pendingId}:no` }
       ]
     ];
     await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
-      `已选择「${safeTitle}」导出为 ${format.toUpperCase()}，要翻译成简体中文吗？`,
+      `已选择 ${safeTitle}.${format}，是否翻译为简体中文？`,
       { inline_keyboard: inlineKeyboard }
     );
     return;
   }
 
-  // 处理单文件格式选择 -> 转为 pending 并询问翻译
+  // 单文件格式选择 → 询问翻译
   if (data.startsWith('pending_format:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
     const format = parts[2];
-    
+
     const pendingData = await getPendingForward(env, pendingId);
     if (!pendingData) {
-      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '太久没选，本喵忘记刚才的请求了喵！');
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '请求已过期，请重新转发。');
       return;
     }
 
-    // 更新 pendingData，加入 format 字段
     pendingData.format = format;
     await storePendingForward(env, pendingId, pendingData);
 
-    // 询问翻译
     const inlineKeyboard = [
       [
-        { text: '✅ 是，翻译成简体中文', callback_data: `translate_choice:${pendingId}:yes` },
-        { text: '❌ 否，保留原文', callback_data: `translate_choice:${pendingId}:no` }
+        { text: '翻译为简体中文', callback_data: `translate_choice:${pendingId}:yes` },
+        { text: '保留原文', callback_data: `translate_choice:${pendingId}:no` }
       ]
     ];
     await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
-      `已选择导出为 ${format.toUpperCase()}，要翻译成简体中文吗？`,
+      `已选择 ${format.toUpperCase()} 格式，是否翻译为简体中文？`,
       { inline_keyboard: inlineKeyboard }
     );
     return;
   }
 }
 
-// ==================== 原有辅助功能 ====================
-
+// ==================== 示例文件生成 ====================
 async function handleGenFile(env, chatId, userId, userName) {
-  const content = `这是本喵特意为你生成的文件，${userName}！\n用户ID：${userId}`;
+  const content = `示例文件\n用户：${userName}\nID：${userId}`;
   const quote = await getRandomQuote(env);
-  await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, `File_${Date.now()}.txt`, content, quote);
+  await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, `sample_${Date.now()}.txt`, content, quote);
 }
