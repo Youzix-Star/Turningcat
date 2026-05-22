@@ -372,11 +372,12 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
 
     const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
     let translatedText = null;
-    let fileName = `${title}-${format === 'md' ? 'Log.md' : 'Log.txt'}`;
+    let fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
 
     if (choice === 'yes') {
       try {
-        const email = env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory';
+        // 关键：trim() 去除变量前后空格
+        const email = (env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory').trim();
         
         // ===== 调试：发送邮箱信息 =====
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
