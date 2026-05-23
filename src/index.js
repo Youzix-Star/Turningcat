@@ -485,9 +485,8 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (choice === 'no') {
-      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '已取消 MyMemory 翻译。');
-      await deletePendingForward(env, pendingId);
-      await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+      // 返回到翻译服务选择界面
+      await askTranslateService(env.TELEGRAM_BOT_TOKEN, chatId, messageId, pendingId);
       return;
     }
 
