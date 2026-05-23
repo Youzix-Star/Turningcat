@@ -1,5 +1,7 @@
 // src/index.js
 
+import { translateBaidu } from './baidu-translate.js';
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method !== 'POST') {
@@ -196,7 +198,7 @@ async function handleAuth(msg, env) {
   const parts = text.split(/\s+/);
 
   if (parts.length < 2) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '使用方法：<code>/auth &lt;密钥&gt;</code>', { parse_mode: 'HTML' });
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '使用方法：<code>/auth &lt;密钥&gt;</code>');
     return;
   }
 
@@ -474,7 +476,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   if (data.startsWith('translate_service:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
-    const service = parts[2]; // 'my', 'ds', 'no'
+    const service = parts[2]; // 'my', 'ds', 'bd', 'no'
 
     const pendingData = await getPendingForward(env, pendingId);
     if (!pendingData) {
@@ -483,6 +485,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'no') {
+      // 保留原文
       const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
       const content = generateFileContent(format, title, forwardChat, forwardDate, originalText);
       const quote = await getRandomQuote(env);
@@ -495,6 +498,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'my') {
+      // MyMemory：需要选择源语言
       pendingData.service = 'my';
       await storePendingForward(env, pendingId, pendingData);
 
@@ -515,6 +519,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'ds') {
+      // DeepSeek AI：需检查认证
       const userId = fromUser.id;
       const authorized = await isUserAuthorized(env, userId);
       if (!authorized) {
@@ -558,6 +563,36 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       }
       return;
     }
+
+    if (service === 'bd') {
+      // 百度翻译
+      try {
+        const appId = env.BAIDU_APP_ID;
+        const secretKey = env.BAIDU_SECRET_KEY;
+        if (!appId || !secretKey) {
+          await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '未配置百度翻译 API 密钥。');
+          return;
+        }
+
+        const result = await translateBaidu(pendingData.originalText, appId, secretKey);
+        const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
+        const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, result.text);
+        const quote = await getRandomQuote(env);
+        const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
+
+        let debugMsg = `[DEBUG] 翻译服务：百度翻译\n`;
+        debugMsg += `耗时：${result.duration} ms`;
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `<pre>${escapeHtml(debugMsg)}</pre>`);
+
+        await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
+        await incrementUserStat(env, fromUser);
+        await deletePendingForward(env, pendingId);
+        await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+      } catch (e) {
+        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, `百度翻译失败：${e.message}`);
+      }
+      return;
+    }
   }
 
   // ---------- 选择源语言后翻译（仅 MyMemory） ----------
@@ -582,7 +617,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       const quote = await getRandomQuote(env);
       const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
-      // 调试信息
       let debugMsg = `[DEBUG] 翻译服务：MyMemory\n`;
       debugMsg += `源语言：${escapeHtml(sourceLang)}\n`;
       debugMsg += `耗时：${result.duration} ms`;
@@ -682,6 +716,9 @@ async function askTranslateService(token, chatId, messageId, pendingId) {
     ],
     [
       { text: 'DeepSeek AI 翻译', callback_data: `translate_service:${pendingId}:ds` },
+    ],
+    [
+      { text: '百度翻译', callback_data: `translate_service:${pendingId}:bd` },
     ],
     [
       { text: '保留原文', callback_data: `translate_service:${pendingId}:no` }
