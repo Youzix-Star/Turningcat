@@ -38,9 +38,8 @@ export default {
           await handleAddQuote(msg, env);
         } else if (text === '/help') {
           let helpMsg = '<b>可用命令</b>\n/start - 开始使用\n/genfile - 生成示例文件\n/rank - 查看使用排行\n/auth - 认证 DeepSeek 使用权限\n/help - 显示帮助\n\n转发频道消息即可生成文件。';
-          // 如果是管理员，额外显示管理员命令
           if (msg.from.id.toString() === env.ADMIN_ID) {
-            helpMsg += '\n\n<b>管理员命令</b>\n/listauth - 列出所有认证用户及翻译次数\n/banauth &lt;用户ID&gt; - 拉黑并取消认证\n/kickauth &lt;用户ID&gt; - 取消认证（不拉黑）';
+            helpMsg += '\n\n<b>管理员命令</b>\n/listauth - 列出认证/拉黑用户及翻译次数\n/banauth &lt;用户ID&gt; - 拉黑并取消认证\n/kickauth &lt;用户ID&gt; - 取消认证（不拉黑）\n/unbanauth &lt;用户ID&gt; - 解封拉黑用户';
           }
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, helpMsg);
         } else if (text.startsWith('/auth')) {
@@ -51,6 +50,8 @@ export default {
           await handleBanAuth(msg, env);
         } else if (text.startsWith('/kickauth')) {
           await handleKickAuth(msg, env);
+        } else if (text.startsWith('/unbanauth')) {
+          await handleUnbanAuth(msg, env);
         }
       }
 
@@ -110,25 +111,20 @@ async function incrementUserStat(env, user, serviceType) {
         genfile: 0
       };
     } else {
-      // 兼容旧数据
       stats[userId].name = userName;
       if (typeof stats[userId].total !== 'number') stats[userId].total = stats[userId].count || 0;
       if (typeof stats[userId].myMemory !== 'number') stats[userId].myMemory = 0;
       if (typeof stats[userId].deepSeek !== 'number') stats[userId].deepSeek = 0;
       if (typeof stats[userId].baidu !== 'number') stats[userId].baidu = 0;
       if (typeof stats[userId].genfile !== 'number') stats[userId].genfile = 0;
-      // 删除旧 count 字段
       delete stats[userId].count;
     }
 
-    // 增加总次数
     stats[userId].total += 1;
-    // 增加对应服务次数
     if (serviceType === 'myMemory') stats[userId].myMemory += 1;
     else if (serviceType === 'deepSeek') stats[userId].deepSeek += 1;
     else if (serviceType === 'baidu') stats[userId].baidu += 1;
     else if (serviceType === 'genfile') stats[userId].genfile += 1;
-    // 其他情况默认只增加总次数
 
     await kv.put('global_leaderboard', JSON.stringify(stats));
   } catch (e) { console.error(e); }
@@ -258,13 +254,23 @@ async function banUser(env, userId) {
     banned.push(id);
     await kv.put('banned_users', JSON.stringify(banned));
   }
-  // 同时从认证列表中移除
   await removeAuthUser(env, userId);
 }
 
 async function kickAuthUser(env, userId) {
-  // 只移除认证，不加入黑名单
   await removeAuthUser(env, userId);
+}
+
+async function unbanUser(env, userId) {
+  const kv = env.USER_STATS_KV;
+  if (!kv) return;
+  let banned = await kv.get('banned_users', { type: 'json' }) || [];
+  const id = userId.toString();
+  const index = banned.indexOf(id);
+  if (index > -1) {
+    banned.splice(index, 1);
+    await kv.put('banned_users', JSON.stringify(banned));
+  }
 }
 
 async function handleAuth(msg, env) {
@@ -286,7 +292,6 @@ async function handleAuth(msg, env) {
     return;
   }
 
-  // 检查黑名单
   if (await isUserBanned(env, userId)) {
     await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '您已被管理员拉黑，无法进行认证。');
     return;
@@ -312,19 +317,32 @@ async function handleListAuth(msg, env) {
   if (!kv) return;
 
   const authUsers = await kv.get('authorized_users', { type: 'json' }) || [];
-  if (authUsers.length === 0) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '当前无认证用户。');
-    return;
-  }
-
+  const bannedUsers = await kv.get('banned_users', { type: 'json' }) || [];
   const stats = await kv.get('global_leaderboard', { type: 'json' }) || {};
 
-  let msgText = '<b>已认证用户列表</b>\n\n';
-  for (const userId of authUsers) {
-    const userStats = stats[userId] || { name: '未知用户', total: 0, myMemory: 0, deepSeek: 0, baidu: 0, genfile: 0 };
-    msgText += `<b>${escapeHtml(userStats.name)}</b> (ID: ${userId})\n`;
-    msgText += `  总次数: ${userStats.total || 0}\n`;
-    msgText += `  MyMemory: ${userStats.myMemory || 0}  DeepSeek: ${userStats.deepSeek || 0}  百度: ${userStats.baidu || 0}  生成文件: ${userStats.genfile || 0}\n\n`;
+  let msgText = '';
+
+  // 认证用户列表
+  if (authUsers.length > 0) {
+    msgText += '<b>✅ 已认证用户</b>\n';
+    for (const userId of authUsers) {
+      const userStats = stats[userId] || { name: '未知用户', total: 0, myMemory: 0, deepSeek: 0, baidu: 0, genfile: 0 };
+      msgText += `  <code>${userId}</code> - ${escapeHtml(userStats.name)}\n`;
+      msgText += `  📊 总:${userStats.total || 0} | MyMemory:${userStats.myMemory || 0} | DeepSeek:${userStats.deepSeek || 0} | 百度:${userStats.baidu || 0} | 文件:${userStats.genfile || 0}\n\n`;
+    }
+  } else {
+    msgText += '<b>✅ 已认证用户</b>\n  暂无\n\n';
+  }
+
+  // 被拉黑用户列表
+  if (bannedUsers.length > 0) {
+    msgText += '<b>🚫 被拉黑用户</b>\n';
+    for (const userId of bannedUsers) {
+      const userStats = stats[userId] || { name: '未知用户', total: 0 };
+      msgText += `  <code>${userId}</code> - ${escapeHtml(userStats.name)} (总次数: ${userStats.total || 0})\n`;
+    }
+  } else {
+    msgText += '<b>🚫 被拉黑用户</b>\n  暂无';
   }
 
   await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, msgText);
@@ -344,7 +362,7 @@ async function handleBanAuth(msg, env) {
 
   const targetId = parts[1];
   await banUser(env, targetId);
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `已将用户 ${targetId} 拉黑并取消认证。`);
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `已将用户 <code>${targetId}</code> 拉黑并取消认证。`);
 }
 
 async function handleKickAuth(msg, env) {
@@ -361,12 +379,28 @@ async function handleKickAuth(msg, env) {
 
   const targetId = parts[1];
   await kickAuthUser(env, targetId);
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `已取消用户 ${targetId} 的认证，该用户仍可重新认证。`);
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `已取消用户 <code>${targetId}</code> 的认证，该用户仍可重新认证。`);
+}
+
+async function handleUnbanAuth(msg, env) {
+  if (msg.from.id.toString() !== env.ADMIN_ID) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '无权限。');
+    return;
+  }
+
+  const parts = msg.text.trim().split(/\s+/);
+  if (parts.length < 2) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '使用方法：<code>/unbanauth &lt;用户ID&gt;</code>');
+    return;
+  }
+
+  const targetId = parts[1];
+  await unbanUser(env, targetId);
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `已解封用户 <code>${targetId}</code>，该用户可以重新认证。`);
 }
 
 // ==================== 翻译服务 ====================
 
-// MyMemory 翻译（返回文本和耗时）
 async function translateMyMemory(text, sourceLang, email) {
   const startTime = Date.now();
   const MAX_CHARS = 500;
@@ -395,7 +429,6 @@ async function translateMyMemory(text, sourceLang, email) {
   return { text: translated, duration };
 }
 
-// DeepSeek AI 翻译（返回文本、耗时和 token 用量）
 async function translateDeepSeek(text, apiKey) {
   const startTime = Date.now();
   if (!apiKey) throw new Error('未配置 DeepSeek API Key');
@@ -536,7 +569,6 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   return true;
 }
 
-// 第一步：选择文件（只显示文件名）
 async function sendFileSelection(token, chatId, mediaGroupId, groupData) {
   const inlineKeyboard = groupData.files.map((file, i) => [
     { text: file.title, callback_data: `select_file:${mediaGroupId}:${i}` }
@@ -597,7 +629,7 @@ async function handleForwardedMessage(msg, env, ctx) {
   });
 }
 
-// ==================== 源语言列表（仅用于 MyMemory） ====================
+// ==================== 源语言列表 ====================
 const LANG_OPTIONS = [
   { code: 'en', name: 'English' },
   { code: 'ja', name: '日本語' },
@@ -618,11 +650,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   const messageId = msg.message_id;
   const fromUser = callbackQuery.from;
 
-  // ---------- MyMemory 超长确认 ----------
   if (data.startsWith('confirm_my:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
-    const choice = parts[2]; // 'yes' or 'no'
+    const choice = parts[2];
 
     const pendingData = await getPendingForward(env, pendingId);
     if (!pendingData) {
@@ -631,12 +662,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (choice === 'no') {
-      // 返回到翻译服务选择界面
       await askTranslateService(env.TELEGRAM_BOT_TOKEN, chatId, messageId, pendingId);
       return;
     }
 
-    // 确认继续，进入语言选择
     pendingData.service = 'my';
     await storePendingForward(env, pendingId, pendingData);
 
@@ -656,11 +685,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // ---------- 翻译服务选择 ----------
   if (data.startsWith('translate_service:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
-    const service = parts[2]; // 'my', 'ds', 'bd', 'no'
+    const service = parts[2];
 
     const pendingData = await getPendingForward(env, pendingId);
     if (!pendingData) {
@@ -682,7 +710,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
 
     if (service === 'my') {
       const originalText = pendingData.originalText;
-      // 检查是否超过500字符
       if (originalText.length > 500) {
         const confirmKeyboard = [
           [{ text: '继续翻译（文本将被截断）', callback_data: `confirm_my:${pendingId}:yes` }],
@@ -694,7 +721,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         return;
       }
 
-      // 未超过，直接进入语言选择
       pendingData.service = 'my';
       await storePendingForward(env, pendingId, pendingData);
 
@@ -716,13 +742,11 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
 
     if (service === 'ds') {
       const userId = fromUser.id;
-      // 检查黑名单
       if (await isUserBanned(env, userId)) {
         await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '您已被管理员拉黑，无法使用 DeepSeek 翻译。');
         return;
       }
-      const authorized = await isUserAuthorized(env, userId);
-      if (!authorized) {
+      if (!await isUserAuthorized(env, userId)) {
         await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
           '您尚未通过 DeepSeek 翻译认证。\n请发送 /auth &lt;密钥&gt; 进行认证。',
           { parse_mode: 'HTML' }
@@ -743,7 +767,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
-        // DEBUG 输出
         let debugMsg = `[DEBUG] 翻译服务：DeepSeek AI (deepseek-v4-flash)\n`;
         debugMsg += `耗时：${result.duration} ms\n`;
         if (result.usage) {
@@ -781,7 +804,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
-        // DEBUG 输出
         let debugMsg = `[DEBUG] 翻译服务：百度翻译\n`;
         debugMsg += `文本长度：${result.debugInfo.textLength}\n`;
         const respData = result.debugInfo.responseData;
@@ -809,7 +831,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
   }
 
-  // ---------- 选择源语言后翻译（仅 MyMemory） ----------
   if (data.startsWith('source_lang:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -848,7 +869,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // ---------- 格式选择后询问“翻译服务” ----------
   if (data.startsWith('select_media_format:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -881,7 +901,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // 媒体组：文件选择（第一步）
   if (data.startsWith('select_file:')) {
     const parts = data.split(':');
     const mediaGroupId = parts[1];
@@ -924,7 +943,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   }
 }
 
-// 弹出翻译服务选择键盘
 async function askTranslateService(token, chatId, messageId, pendingId) {
   const inlineKeyboard = [
     [
