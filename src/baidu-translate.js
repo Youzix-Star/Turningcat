@@ -202,40 +202,36 @@ var MD5 = function (string) {
     return temp.toLowerCase();
 };
 
-// ---------- 百度翻译 API 调用（修复换行符 + 完整 DEBUG） ----------
+// ---------- 百度翻译 API 调用（彻底消除换行符） ----------
 export async function translateBaidu(text, appId, secretKey) {
   const startTime = Date.now();
   if (!appId || !secretKey) throw new Error('未配置百度翻译 API 密钥');
 
   const MAX_CHARS = 1800;
-  let textToTranslate = text;
+  // 将原始文本的换行符全部替换成空格，形成单行文本
+  let textToTranslate = text.replace(/\r?\n|\r/g, ' ');
   let truncated = false;
-  if (text.length > MAX_CHARS) {
-    textToTranslate = text.substring(0, MAX_CHARS);
+  if (textToTranslate.length > MAX_CHARS) {
+    textToTranslate = textToTranslate.substring(0, MAX_CHARS);
     truncated = true;
   }
 
   const salt = String(Date.now());
 
-  // 关键修复：用于签名的文本将所有类型的换行符（\r\n、\r、\n）替换为空格
-  const textForSign = textToTranslate.replace(/\r?\n|\r/g, ' ');
-
-  // 签名原文（使用处理后的文本）
-  const rawStr = appId + textForSign + salt + secretKey;
+  // 签名原文和请求体使用完全相同的单行文本
+  const rawStr = appId + textToTranslate + salt + secretKey;
   const sign = MD5(rawStr);
 
-  // 请求体中的 q 仍然使用原始文本（保留换行结构），以确保翻译保留段落
   const encodedQ = encodeURIComponent(textToTranslate);
   const requestBody = `q=${encodedQ}&from=auto&to=zh&appid=${appId}&salt=${salt}&sign=${sign}`;
 
-  // 调试信息（展示替换换行后的 rawStr）
   const debugInfo = {
     salt,
     sign,
     appId,
     textLength: textToTranslate.length,
     truncated,
-    rawStr,                      // 完整的签名原文（已含密钥），仅认证用户可见
+    rawStr,
     requestBody: requestBody.substring(0, 300)
   };
 
