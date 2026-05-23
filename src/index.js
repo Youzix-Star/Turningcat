@@ -472,6 +472,45 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   const messageId = msg.message_id;
   const fromUser = callbackQuery.from;
 
+  // ---------- MyMemory 超长确认 ----------
+  if (data.startsWith('confirm_my:')) {
+    const parts = data.split(':');
+    const pendingId = parts[1];
+    const choice = parts[2]; // 'yes' or 'no'
+
+    const pendingData = await getPendingForward(env, pendingId);
+    if (!pendingData) {
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '请求已过期，请重新转发。');
+      return;
+    }
+
+    if (choice === 'no') {
+      await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '已取消 MyMemory 翻译。');
+      await deletePendingForward(env, pendingId);
+      await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
+      return;
+    }
+
+    // 确认继续，进入语言选择
+    pendingData.service = 'my';
+    await storePendingForward(env, pendingId, pendingData);
+
+    const inlineKeyboard = [];
+    for (let i = 0; i < LANG_OPTIONS.length; i += 2) {
+      const row = [];
+      row.push({ text: LANG_OPTIONS[i].name, callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i].code}` });
+      if (i + 1 < LANG_OPTIONS.length) {
+        row.push({ text: LANG_OPTIONS[i + 1].name, callback_data: `source_lang:${pendingId}:${LANG_OPTIONS[i + 1].code}` });
+      }
+      inlineKeyboard.push(row);
+    }
+    await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
+      '请选择原文语言（MyMemory 翻译）：',
+      { inline_keyboard: inlineKeyboard }
+    );
+    return;
+  }
+
   // ---------- 翻译服务选择 ----------
   if (data.startsWith('translate_service:')) {
     const parts = data.split(':');
@@ -497,6 +536,20 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'my') {
+      const originalText = pendingData.originalText;
+      // 检查是否超过500字符
+      if (originalText.length > 500) {
+        const confirmKeyboard = [
+          [{ text: '继续翻译（文本将被截断）', callback_data: `confirm_my:${pendingId}:yes` }],
+          [{ text: '取消', callback_data: `confirm_my:${pendingId}:no` }]
+        ];
+        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
+          `原文超过500字符（${originalText.length} 字符），MyMemory 仅能翻译前500字符。是否继续？`,
+          { inline_keyboard: confirmKeyboard });
+        return;
+      }
+
+      // 未超过，直接进入语言选择
       pendingData.service = 'my';
       await storePendingForward(env, pendingId, pendingData);
 
