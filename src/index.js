@@ -575,17 +575,21 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
-        // 成功时的 DEBUG 信息
+        // 构建 DEBUG，仅对认证用户显示完整 rawStr
+        const isAuth = await isUserAuthorized(env, fromUser.id);
         let debugMsg = `[DEBUG] 翻译服务：百度翻译\n`;
         debugMsg += `耗时：${result.duration} ms\n`;
-        if (result.debugInfo) {
-          debugMsg += `Salt: ${result.debugInfo.salt}\n`;
-          debugMsg += `Sign: ${result.debugInfo.sign}\n`;
-          debugMsg += `文本长度: ${result.debugInfo.textLength}\n`;
-          const respPreview = result.debugInfo.responseData;
-          if (respPreview) {
-            debugMsg += `API 返回: ${JSON.stringify(respPreview).substring(0, 300)}`;
-          }
+        debugMsg += `Salt: ${result.debugInfo.salt}\n`;
+        debugMsg += `Sign: ${result.debugInfo.sign}\n`;
+        debugMsg += `文本长度: ${result.debugInfo.textLength}\n`;
+        if (isAuth) {
+          debugMsg += `签名原文 (rawStr): ${result.debugInfo.rawStr}\n`;
+        } else {
+          debugMsg += `签名原文 (rawStr): 认证后可查看完整内容\n`;
+        }
+        const respPreview = result.debugInfo.responseData;
+        if (respPreview) {
+          debugMsg += `API 返回: ${JSON.stringify(respPreview).substring(0, 300)}`;
         }
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `<pre>${escapeHtml(debugMsg)}</pre>`);
 
@@ -594,10 +598,16 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         await deletePendingForward(env, pendingId);
         await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
       } catch (e) {
-        // 失败时的 DEBUG 信息
+        // 失败时的 DEBUG
+        const isAuth = await isUserAuthorized(env, fromUser.id);
         let errorMsg = `百度翻译失败：${e.message}`;
         if (e.debugInfo) {
           errorMsg += `\n\n[DEBUG]\nSalt: ${e.debugInfo.salt}\nSign: ${e.debugInfo.sign}`;
+          if (isAuth) {
+            errorMsg += `\n签名原文 (rawStr): ${e.debugInfo.rawStr}`;
+          } else {
+            errorMsg += `\n签名原文 (rawStr): 认证后可查看完整内容`;
+          }
           if (e.debugInfo.responseData) {
             errorMsg += `\nAPI返回: ${JSON.stringify(e.debugInfo.responseData).substring(0, 300)}`;
           } else {
