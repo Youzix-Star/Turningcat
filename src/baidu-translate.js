@@ -188,11 +188,13 @@ export async function translateBaidu(text, appId, secretKey) {
   }
 
   const salt = String(Date.now());
-  // 签名：MD5(appid + text + salt + secret)
-  const sign = md5(appId + textToTranslate + salt + secretKey);
+  // 签名：MD5(appid + 原始文本 + salt + secret)
+  // 注意：这里的 textToTranslate 必须是原始的，不能是 URL 编码后的
+  const rawStr = appId + textToTranslate + salt + secretKey;
+  const sign = md5(rawStr);
 
   const params = new URLSearchParams();
-  params.append('q', textToTranslate);
+  params.append('q', textToTranslate); // 这里由 URLSearchParams 自动编码
   params.append('from', 'auto');
   params.append('to', 'zh');
   params.append('appid', appId);
