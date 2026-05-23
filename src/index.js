@@ -170,7 +170,6 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
 }
 
 // ==================== 认证系统 ====================
-// 检查用户是否已认证（从 KV 读取 authorized_users 数组）
 async function isUserAuthorized(env, userId) {
   const kv = env.USER_STATS_KV;
   if (!kv) return false;
@@ -179,7 +178,6 @@ async function isUserAuthorized(env, userId) {
   return data.includes(userId.toString());
 }
 
-// 添加用户到认证列表
 async function authorizeUser(env, userId) {
   const kv = env.USER_STATS_KV;
   if (!kv) return;
@@ -191,7 +189,6 @@ async function authorizeUser(env, userId) {
   }
 }
 
-// 处理 /auth 命令
 async function handleAuth(msg, env) {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -221,8 +218,9 @@ async function handleAuth(msg, env) {
 
 // ==================== 翻译服务 ====================
 
-// MyMemory 翻译
+// MyMemory 翻译（返回文本和耗时）
 async function translateMyMemory(text, sourceLang, email) {
+  const startTime = Date.now();
   const MAX_CHARS = 500;
   let textToTranslate = text;
   let truncated = false;
@@ -234,6 +232,7 @@ async function translateMyMemory(text, sourceLang, email) {
 
   const resp = await fetch(url);
   const data = await resp.json();
+  const duration = Date.now() - startTime;
 
   if (data.responseStatus !== 200) {
     throw new Error(`MyMemory 错误: ${data.responseDetails || JSON.stringify(data)}`);
@@ -245,11 +244,12 @@ async function translateMyMemory(text, sourceLang, email) {
   if (truncated) {
     translated += '\n\n[原文超过500字符，已截断翻译]';
   }
-  return translated;
+  return { text: translated, duration };
 }
 
-// DeepSeek AI 翻译（模型 deepseek-v4-flash）
+// DeepSeek AI 翻译（返回文本、耗时和 token 用量）
 async function translateDeepSeek(text, apiKey) {
+  const startTime = Date.now();
   if (!apiKey) throw new Error('未配置 DeepSeek API Key');
 
   const MAX_CHARS = 4000;
@@ -282,6 +282,7 @@ async function translateDeepSeek(text, apiKey) {
       max_tokens: 2000
     })
   });
+  const duration = Date.now() - startTime;
 
   if (!response.ok) {
     const err = await response.text();
@@ -295,10 +296,15 @@ async function translateDeepSeek(text, apiKey) {
     throw new Error('DeepSeek 返回空翻译');
   }
 
+  const usage = data.usage || {};
   if (truncated) {
-    return translated + '\n\n[原文过长，已截断翻译]';
+    return {
+      text: translated + '\n\n[原文过长，已截断翻译]',
+      duration,
+      usage
+    };
   }
-  return translated;
+  return { text: translated, duration, usage };
 }
 
 // ==================== 文件内容生成 ====================
@@ -477,7 +483,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'no') {
-      // 保留原文
       const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
       const content = generateFileContent(format, title, forwardChat, forwardDate, originalText);
       const quote = await getRandomQuote(env);
@@ -490,7 +495,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'my') {
-      // MyMemory：需要选择源语言
       pendingData.service = 'my';
       await storePendingForward(env, pendingId, pendingData);
 
@@ -511,7 +515,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'ds') {
-      // DeepSeek AI：需检查认证
       const userId = fromUser.id;
       const authorized = await isUserAuthorized(env, userId);
       if (!authorized) {
@@ -529,14 +532,24 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
           return;
         }
 
-        const translatedText = await translateDeepSeek(pendingData.originalText, apiKey);
+        const result = await translateDeepSeek(pendingData.originalText, apiKey);
         const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
-        const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText);
+        const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, result.text);
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
+
+        // 构造调试信息
+        let debugMsg = `[DEBUG] 翻译服务：DeepSeek AI (deepseek-v4-flash)\n`;
+        debugMsg += `耗时：${result.duration} ms\n`;
+        if (result.usage) {
+          debugMsg += `Token 使用：\n`;
+          debugMsg += `  Prompt：${result.usage.prompt_tokens || '?'}\n`;
+          debugMsg += `  Completion：${result.usage.completion_tokens || '?'}\n`;
+          debugMsg += `  Total：${result.usage.total_tokens || '?'}`;
+        }
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `<pre>${escapeHtml(debugMsg)}</pre>`);
+
         await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
-        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-          `[DEBUG] 翻译服务：DeepSeek AI (deepseek-v4-flash)`);
         await incrementUserStat(env, fromUser);
         await deletePendingForward(env, pendingId);
         await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
@@ -560,26 +573,28 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
-    let translatedText = null;
-    let fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
 
     try {
       const email = (env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory').trim();
-      translatedText = await translateMyMemory(originalText, sourceLang, email);
-      fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
-      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-        `[DEBUG] 翻译服务：MyMemory\n源语言：${escapeHtml(sourceLang)}`);
+      const result = await translateMyMemory(originalText, sourceLang, email);
+
+      const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, result.text);
+      const quote = await getRandomQuote(env);
+      const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
+
+      // 调试信息
+      let debugMsg = `[DEBUG] 翻译服务：MyMemory\n`;
+      debugMsg += `源语言：${escapeHtml(sourceLang)}\n`;
+      debugMsg += `耗时：${result.duration} ms`;
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `<pre>${escapeHtml(debugMsg)}</pre>`);
+
+      await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
+      await incrementUserStat(env, fromUser);
+      await deletePendingForward(env, pendingId);
+      await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
     } catch (e) {
       await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, `翻译失败：${e.message}`);
-      return;
     }
-
-    const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText);
-    const quote = await getRandomQuote(env);
-    await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
-    await incrementUserStat(env, fromUser);
-    await deletePendingForward(env, pendingId);
-    await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
     return;
   }
 
