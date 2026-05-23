@@ -216,7 +216,7 @@ export async function translateBaidu(text, appId, secretKey) {
   }
 
   const salt = String(Date.now());
-  // 签名：MD5(appid + 原始文本 + salt + secret)
+  // 签名：MD5(appid + 原始文本 + salt + secret)，使用原始文本
   const rawStr = appId + textToTranslate + salt + secretKey;
   const sign = MD5(rawStr);
 
@@ -227,12 +227,12 @@ export async function translateBaidu(text, appId, secretKey) {
     appId,
     textLength: textToTranslate.length,
     truncated,
-    // 只展示拼接字符串的前面部分（不包含密钥）
     rawStrPreview: (appId + textToTranslate.substring(0, 50) + '...' + salt + '***').substring(0, 200)
   };
 
+  // 构造请求参数，对 q 手动编码，防止 + 号等特殊字符被错误解析
   const params = new URLSearchParams();
-  params.append('q', textToTranslate);
+  params.append('q', encodeURIComponent(textToTranslate));
   params.append('from', 'auto');
   params.append('to', 'zh');
   params.append('appid', appId);
