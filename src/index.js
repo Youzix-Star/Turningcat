@@ -196,29 +196,55 @@ async function translateMyMemory(text, sourceLang, email) {
   return translated;
 }
 
-// Lingva 翻译（源语言可为 auto）
-async function translateLingva(text, sourceLang) {
-  const targetLang = 'zh';
-  const MAX_CHARS = 2000;
+// DeepSeek AI 翻译（模型已更新为 deepseek-v4-flash）
+async function translateDeepSeek(text, apiKey) {
+  if (!apiKey) throw new Error('未配置 DeepSeek API Key');
+
+  const MAX_CHARS = 4000;
   let textToTranslate = text;
   let truncated = false;
   if (text.length > MAX_CHARS) {
     textToTranslate = text.substring(0, MAX_CHARS);
     truncated = true;
   }
-  const url = `https://lingva.ml/api/v1/${encodeURIComponent(sourceLang)}/${targetLang}/${encodeURIComponent(textToTranslate)}`;
 
-  const resp = await fetch(url);
-  if (!resp.ok) {
-    throw new Error(`Lingva 请求失败 (${resp.status})`);
+  const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个专业的翻译助手。请将用户提供的文本翻译成简体中文。只输出翻译结果，不要任何额外解释或标记。'
+        },
+        {
+          role: 'user',
+          content: textToTranslate
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 2000
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`DeepSeek API 请求失败 (${response.status}): ${err}`);
   }
-  const data = await resp.json();
-  if (!data.translation) {
-    throw new Error('Lingva 返回空翻译');
+
+  const data = await response.json();
+  const translated = data.choices?.[0]?.message?.content?.trim();
+
+  if (!translated) {
+    throw new Error('DeepSeek 返回空翻译');
   }
-  let translated = data.translation;
+
   if (truncated) {
-    translated += '\n\n[原文超过2000字符，已截断翻译]';
+    return translated + '\n\n[原文过长，已截断翻译]';
   }
   return translated;
 }
@@ -365,7 +391,7 @@ async function handleForwardedMessage(msg, env, ctx) {
   });
 }
 
-// ==================== 源语言列表 ====================
+// ==================== 源语言列表（仅用于 MyMemory） ====================
 const LANG_OPTIONS = [
   { code: 'en', name: 'English' },
   { code: 'ja', name: '日本語' },
@@ -390,7 +416,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   if (data.startsWith('translate_service:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
-    const service = parts[2]; // 'my', 'lv', 'no'
+    const service = parts[2]; // 'my', 'ds', 'no'
 
     const pendingData = await getPendingForward(env, pendingId);
     if (!pendingData) {
@@ -399,7 +425,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'no') {
-      // 不翻译，直接生成原文
+      // 保留原文
       const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
       const content = generateFileContent(format, title, forwardChat, forwardDate, originalText);
       const quote = await getRandomQuote(env);
@@ -432,22 +458,28 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       return;
     }
 
-    if (service === 'lv') {
-      // Lingva：自动检测源语言，直接翻译
+    if (service === 'ds') {
+      // DeepSeek AI：自动检测语言，直接翻译
       try {
-        const translatedText = await translateLingva(pendingData.originalText, 'auto');
+        const apiKey = env.DEEPSEEK_API_KEY;
+        if (!apiKey) {
+          await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '未配置 DeepSeek API Key。');
+          return;
+        }
+
+        const translatedText = await translateDeepSeek(pendingData.originalText, apiKey);
         const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
         const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText);
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
         await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-          `[DEBUG] 翻译服务：Lingva (自动检测源语言)`);
+          `[DEBUG] 翻译服务：DeepSeek AI (deepseek-v4-flash)`);
         await incrementUserStat(env, fromUser);
         await deletePendingForward(env, pendingId);
         await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
       } catch (e) {
-        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, `Lingva 翻译失败：${e.message}`);
+        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, `DeepSeek 翻译失败：${e.message}`);
       }
       return;
     }
@@ -468,7 +500,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
     let translatedText = null;
     let fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
-    let usedService = 'MyMemory';
 
     try {
       const email = (env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory').trim();
@@ -491,7 +522,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   }
 
   // ---------- 格式选择后询问“翻译服务” ----------
-  // 媒体组：格式选择后
   if (data.startsWith('select_media_format:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -504,12 +534,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
     pendingData.format = format;
     await storePendingForward(env, pendingId, pendingData);
-
     await askTranslateService(env.TELEGRAM_BOT_TOKEN, chatId, messageId, pendingId);
     return;
   }
 
-  // 单文件：格式选择后
   if (data.startsWith('pending_format:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -522,7 +550,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
     pendingData.format = format;
     await storePendingForward(env, pendingId, pendingData);
-
     await askTranslateService(env.TELEGRAM_BOT_TOKEN, chatId, messageId, pendingId);
     return;
   }
@@ -577,7 +604,7 @@ async function askTranslateService(token, chatId, messageId, pendingId) {
       { text: 'MyMemory 翻译', callback_data: `translate_service:${pendingId}:my` },
     ],
     [
-      { text: 'Lingva 翻译 (自动)', callback_data: `translate_service:${pendingId}:lv` },
+      { text: 'DeepSeek AI 翻译', callback_data: `translate_service:${pendingId}:ds` },
     ],
     [
       { text: '保留原文', callback_data: `translate_service:${pendingId}:no` }
