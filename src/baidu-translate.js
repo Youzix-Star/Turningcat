@@ -202,7 +202,7 @@ var MD5 = function (string) {
     return temp.toLowerCase();
 };
 
-// ---------- 百度翻译 API 调用（增强 DEBUG，修复双重编码） ----------
+// ---------- 百度翻译 API 调用（带完整 DEBUG） ----------
 export async function translateBaidu(text, appId, secretKey) {
   const startTime = Date.now();
   if (!appId || !secretKey) throw new Error('未配置百度翻译 API 密钥');
@@ -216,23 +216,23 @@ export async function translateBaidu(text, appId, secretKey) {
   }
 
   const salt = String(Date.now());
-  // 签名：MD5(appid + 原始文本 + salt + 密钥)
+  // 签名原文（包含密钥）
   const rawStr = appId + textToTranslate + salt + secretKey;
   const sign = MD5(rawStr);
 
-  // 手动拼接请求体，只对 q 进行一次编码，避免双重编码
+  // 手动拼接请求体
   const encodedQ = encodeURIComponent(textToTranslate);
   const requestBody = `q=${encodedQ}&from=auto&to=zh&appid=${appId}&salt=${salt}&sign=${sign}`;
 
-  // 增强 DEBUG 信息（包含拼接原文，注意不要泄露密钥）
+  // DEBUG 信息（包含完整 rawStr）
   const debugInfo = {
     salt,
     sign,
     appId,
     textLength: textToTranslate.length,
     truncated,
-    rawStrPreview: (appId + textToTranslate.substring(0, 50) + '...' + salt + '***').substring(0, 200),
-    requestBodyPreview: requestBody.substring(0, 300)
+    rawStr, // 完整签名原文（含密钥，仅限认证用户查看）
+    requestBody: requestBody.substring(0, 300)
   };
 
   let response, data;
