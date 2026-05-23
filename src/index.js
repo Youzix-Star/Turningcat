@@ -36,7 +36,9 @@ export default {
           await handleAddQuote(msg, env);
         } else if (text === '/help') {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-            '<b>可用命令</b>\n/start - 开始使用\n/genfile - 生成示例文件\n/rank - 查看使用排行\n/help - 显示帮助\n\n转发频道消息即可生成文件。');
+            '<b>可用命令</b>\n/start - 开始使用\n/genfile - 生成示例文件\n/rank - 查看使用排行\n/auth - 认证 DeepSeek 使用权限\n/help - 显示帮助\n\n转发频道消息即可生成文件。');
+        } else if (text.startsWith('/auth')) {
+          await handleAuth(msg, env);
         }
       }
 
@@ -167,6 +169,56 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
   });
 }
 
+// ==================== 认证系统 ====================
+// 检查用户是否已认证（从 KV 读取 authorized_users 数组）
+async function isUserAuthorized(env, userId) {
+  const kv = env.USER_STATS_KV;
+  if (!kv) return false;
+  const data = await kv.get('authorized_users', { type: 'json' });
+  if (!data || !Array.isArray(data)) return false;
+  return data.includes(userId.toString());
+}
+
+// 添加用户到认证列表
+async function authorizeUser(env, userId) {
+  const kv = env.USER_STATS_KV;
+  if (!kv) return;
+  let users = await kv.get('authorized_users', { type: 'json' }) || [];
+  const id = userId.toString();
+  if (!users.includes(id)) {
+    users.push(id);
+    await kv.put('authorized_users', JSON.stringify(users));
+  }
+}
+
+// 处理 /auth 命令
+async function handleAuth(msg, env) {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const text = msg.text.trim();
+  const parts = text.split(/\s+/);
+
+  if (parts.length < 2) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '使用方法：<code>/auth &lt;密钥&gt;</code>', { parse_mode: 'HTML' });
+    return;
+  }
+
+  const providedKey = parts[1];
+  const validKey = env.AUTH_KEY;
+
+  if (!validKey) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '管理员未配置认证密钥，DeepSeek 翻译暂不可用。');
+    return;
+  }
+
+  if (providedKey === validKey) {
+    await authorizeUser(env, userId);
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '认证成功！现在可以使用 DeepSeek AI 翻译了。');
+  } else {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '密钥错误，认证失败。');
+  }
+}
+
 // ==================== 翻译服务 ====================
 
 // MyMemory 翻译
@@ -196,7 +248,7 @@ async function translateMyMemory(text, sourceLang, email) {
   return translated;
 }
 
-// DeepSeek AI 翻译（模型已更新为 deepseek-v4-flash）
+// DeepSeek AI 翻译（模型 deepseek-v4-flash）
 async function translateDeepSeek(text, apiKey) {
   if (!apiKey) throw new Error('未配置 DeepSeek API Key');
 
@@ -459,7 +511,17 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'ds') {
-      // DeepSeek AI：自动检测语言，直接翻译
+      // DeepSeek AI：需检查认证
+      const userId = fromUser.id;
+      const authorized = await isUserAuthorized(env, userId);
+      if (!authorized) {
+        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
+          '您尚未通过 DeepSeek 翻译认证。\n请发送 /auth &lt;密钥&gt; 进行认证。',
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
       try {
         const apiKey = env.DEEPSEEK_API_KEY;
         if (!apiKey) {
