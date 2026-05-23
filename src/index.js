@@ -30,27 +30,27 @@ export default {
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
             '转发频道消息给我，即可导出为 TXT 或 MD 文件，并可选翻译为简体中文。\n\n/rank 查看使用次数排行\n/help 查看所有命令');
         } else if (text === '/genfile') {
-          await incrementUserStat(env, msg.from);
+          await incrementUserStat(env, msg.from, 'genfile');
           await handleGenFile(env, chatId, msg.from.id, msg.from.first_name);
         } else if (text === '/rank') {
           await handleRank(env.TELEGRAM_BOT_TOKEN, chatId, env);
         } else if (text.startsWith('/addquote')) {
           await handleAddQuote(msg, env);
         } else if (text === '/help') {
-          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId,
-            '<b>可用命令</b>\n/start - 开始使用\n/genfile - 生成示例文件\n/rank - 查看使用排行\n/auth - 认证 DeepSeek 使用权限\n/help - 显示帮助\n\n<b>管理员命令</b>\n/authlist - 列出认证用户\n/deauth - 取消认证\n/ban - 拉黑用户\n/unban - 解除拉黑\n/userstats - 查询用户调用次数\n\n转发频道消息即可生成文件。');
+          let helpMsg = '<b>可用命令</b>\n/start - 开始使用\n/genfile - 生成示例文件\n/rank - 查看使用排行\n/auth - 认证 DeepSeek 使用权限\n/help - 显示帮助\n\n转发频道消息即可生成文件。';
+          // 如果是管理员，额外显示管理员命令
+          if (msg.from.id.toString() === env.ADMIN_ID) {
+            helpMsg += '\n\n<b>管理员命令</b>\n/listauth - 列出所有认证用户及翻译次数\n/banauth &lt;用户ID&gt; - 拉黑并取消认证\n/kickauth &lt;用户ID&gt; - 取消认证（不拉黑）';
+          }
+          await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, helpMsg);
         } else if (text.startsWith('/auth')) {
           await handleAuth(msg, env);
-        } else if (text.startsWith('/deauth')) {
-          await handleDeauth(msg, env);
-        } else if (text.startsWith('/ban')) {
-          await handleBan(msg, env);
-        } else if (text.startsWith('/unban')) {
-          await handleUnban(msg, env);
-        } else if (text === '/authlist') {
-          await handleAuthList(msg, env);
-        } else if (text.startsWith('/userstats')) {
-          await handleUserStats(msg, env);
+        } else if (text === '/listauth') {
+          await handleListAuth(msg, env);
+        } else if (text.startsWith('/banauth')) {
+          await handleBanAuth(msg, env);
+        } else if (text.startsWith('/kickauth')) {
+          await handleKickAuth(msg, env);
         }
       }
 
@@ -92,16 +92,44 @@ async function handleAddQuote(msg, env) {
 }
 
 // ==================== 统计 ====================
-async function incrementUserStat(env, user) {
+async function incrementUserStat(env, user, serviceType) {
   const kv = env.USER_STATS_KV;
   if (!kv) return;
   try {
     let stats = await kv.get('global_leaderboard', { type: 'json' }) || {};
     const userId = user.id.toString();
     const userName = user.first_name || user.username || '未知用户';
-    if (!stats[userId]) stats[userId] = { name: userName, count: 0 };
-    stats[userId].name = userName;
-    stats[userId].count += 1;
+
+    if (!stats[userId]) {
+      stats[userId] = {
+        name: userName,
+        total: 0,
+        myMemory: 0,
+        deepSeek: 0,
+        baidu: 0,
+        genfile: 0
+      };
+    } else {
+      // 兼容旧数据
+      stats[userId].name = userName;
+      if (typeof stats[userId].total !== 'number') stats[userId].total = stats[userId].count || 0;
+      if (typeof stats[userId].myMemory !== 'number') stats[userId].myMemory = 0;
+      if (typeof stats[userId].deepSeek !== 'number') stats[userId].deepSeek = 0;
+      if (typeof stats[userId].baidu !== 'number') stats[userId].baidu = 0;
+      if (typeof stats[userId].genfile !== 'number') stats[userId].genfile = 0;
+      // 删除旧 count 字段
+      delete stats[userId].count;
+    }
+
+    // 增加总次数
+    stats[userId].total += 1;
+    // 增加对应服务次数
+    if (serviceType === 'myMemory') stats[userId].myMemory += 1;
+    else if (serviceType === 'deepSeek') stats[userId].deepSeek += 1;
+    else if (serviceType === 'baidu') stats[userId].baidu += 1;
+    else if (serviceType === 'genfile') stats[userId].genfile += 1;
+    // 其他情况默认只增加总次数
+
     await kv.put('global_leaderboard', JSON.stringify(stats));
   } catch (e) { console.error(e); }
 }
@@ -109,14 +137,14 @@ async function incrementUserStat(env, user) {
 async function handleRank(token, chatId, env) {
   const kv = env.USER_STATS_KV;
   let stats = kv ? await kv.get('global_leaderboard', { type: 'json' }) || {} : {};
-  const sortedUsers = Object.values(stats).sort((a, b) => b.count - a.count);
+  const sortedUsers = Object.values(stats).sort((a, b) => b.total - a.total);
   if (sortedUsers.length === 0) {
     await sendTelegramMessage(token, chatId, '暂无使用数据。');
     return;
   }
   let msg = '<b>使用次数排行</b>\n';
   for (let i = 0; i < Math.min(sortedUsers.length, 10); i++) {
-    msg += `${i + 1}. ${sortedUsers[i].name}：${sortedUsers[i].count} 次\n`;
+    msg += `${i + 1}. ${sortedUsers[i].name}：${sortedUsers[i].total} 次\n`;
   }
   await sendTelegramMessage(token, chatId, msg);
 }
@@ -181,20 +209,11 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
   });
 }
 
-// ==================== 管理员辅助函数 ====================
-function isAdmin(env, userId) {
-  const adminId = env.ADMIN_ID;
-  if (!adminId) return false;
-  return userId.toString() === adminId.toString();
-}
-
 // ==================== 认证与黑名单系统 ====================
+
 async function isUserAuthorized(env, userId) {
   const kv = env.USER_STATS_KV;
   if (!kv) return false;
-  // 检查黑名单
-  const blacklist = await kv.get('blacklisted_users', { type: 'json' }) || [];
-  if (blacklist.includes(userId.toString())) return false;
   const data = await kv.get('authorized_users', { type: 'json' });
   if (!data || !Array.isArray(data)) return false;
   return data.includes(userId.toString());
@@ -203,51 +222,51 @@ async function isUserAuthorized(env, userId) {
 async function authorizeUser(env, userId) {
   const kv = env.USER_STATS_KV;
   if (!kv) return;
-  // 黑名单用户无法认证
-  const blacklist = await kv.get('blacklisted_users', { type: 'json' }) || [];
-  if (blacklist.includes(userId.toString())) return false;
   let users = await kv.get('authorized_users', { type: 'json' }) || [];
   const id = userId.toString();
   if (!users.includes(id)) {
     users.push(id);
     await kv.put('authorized_users', JSON.stringify(users));
   }
-  return true;
 }
 
-async function deauthorizeUser(env, userId) {
+async function removeAuthUser(env, userId) {
   const kv = env.USER_STATS_KV;
   if (!kv) return;
   let users = await kv.get('authorized_users', { type: 'json' }) || [];
   const id = userId.toString();
-  const newUsers = users.filter(u => u !== id);
-  await kv.put('authorized_users', JSON.stringify(newUsers));
+  const index = users.indexOf(id);
+  if (index > -1) {
+    users.splice(index, 1);
+    await kv.put('authorized_users', JSON.stringify(users));
+  }
+}
+
+async function isUserBanned(env, userId) {
+  const kv = env.USER_STATS_KV;
+  if (!kv) return false;
+  const banned = await kv.get('banned_users', { type: 'json' }) || [];
+  return banned.includes(userId.toString());
 }
 
 async function banUser(env, userId) {
   const kv = env.USER_STATS_KV;
   if (!kv) return;
-  // 加入黑名单
-  let blacklist = await kv.get('blacklisted_users', { type: 'json' }) || [];
+  let banned = await kv.get('banned_users', { type: 'json' }) || [];
   const id = userId.toString();
-  if (!blacklist.includes(id)) {
-    blacklist.push(id);
-    await kv.put('blacklisted_users', JSON.stringify(blacklist));
+  if (!banned.includes(id)) {
+    banned.push(id);
+    await kv.put('banned_users', JSON.stringify(banned));
   }
-  // 同时移除认证
-  await deauthorizeUser(env, userId);
+  // 同时从认证列表中移除
+  await removeAuthUser(env, userId);
 }
 
-async function unbanUser(env, userId) {
-  const kv = env.USER_STATS_KV;
-  if (!kv) return;
-  let blacklist = await kv.get('blacklisted_users', { type: 'json' }) || [];
-  const id = userId.toString();
-  const newBlacklist = blacklist.filter(u => u !== id);
-  await kv.put('blacklisted_users', JSON.stringify(newBlacklist));
+async function kickAuthUser(env, userId) {
+  // 只移除认证，不加入黑名单
+  await removeAuthUser(env, userId);
 }
 
-// ==================== 管理员命令处理 ====================
 async function handleAuth(msg, env) {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -267,127 +286,82 @@ async function handleAuth(msg, env) {
     return;
   }
 
+  // 检查黑名单
+  if (await isUserBanned(env, userId)) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '您已被管理员拉黑，无法进行认证。');
+    return;
+  }
+
   if (providedKey === validKey) {
-    const success = await authorizeUser(env, userId);
-    if (success) {
-      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '认证成功！现在可以使用 DeepSeek AI 翻译了。');
-    } else {
-      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '认证失败，您已被拉黑，无法使用 DeepSeek。');
-    }
+    await authorizeUser(env, userId);
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '认证成功！现在可以使用 DeepSeek AI 翻译了。');
   } else {
     await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '密钥错误，认证失败。');
   }
 }
 
-async function handleDeauth(msg, env) {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  if (!isAdmin(env, userId)) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '无权限，仅管理员可执行此操作。');
-    return;
-  }
-  const parts = msg.text.trim().split(/\s+/);
-  if (parts.length < 2) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '使用方法：<code>/deauth &lt;用户ID&gt;</code>');
-    return;
-  }
-  const targetUserId = parts[1];
-  await deauthorizeUser(env, targetUserId);
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `已移除用户 ${targetUserId} 的认证。`);
-}
+// ==================== 管理员命令 ====================
 
-async function handleBan(msg, env) {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  if (!isAdmin(env, userId)) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '无权限，仅管理员可执行此操作。');
+async function handleListAuth(msg, env) {
+  if (msg.from.id.toString() !== env.ADMIN_ID) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '无权限。');
     return;
   }
-  const parts = msg.text.trim().split(/\s+/);
-  if (parts.length < 2) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '使用方法：<code>/ban &lt;用户ID&gt;</code>');
-    return;
-  }
-  const targetUserId = parts[1];
-  await banUser(env, targetUserId);
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `已拉黑用户 ${targetUserId}，并移除其认证。`);
-}
 
-async function handleUnban(msg, env) {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  if (!isAdmin(env, userId)) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '无权限，仅管理员可执行此操作。');
-    return;
-  }
-  const parts = msg.text.trim().split(/\s+/);
-  if (parts.length < 2) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '使用方法：<code>/unban &lt;用户ID&gt;</code>');
-    return;
-  }
-  const targetUserId = parts[1];
-  await unbanUser(env, targetUserId);
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `已解除对用户 ${targetUserId} 的拉黑。`);
-}
-
-async function handleAuthList(msg, env) {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  if (!isAdmin(env, userId)) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '无权限，仅管理员可执行此操作。');
-    return;
-  }
   const kv = env.USER_STATS_KV;
-  if (!kv) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '存储未配置。');
-    return;
-  }
+  if (!kv) return;
+
   const authUsers = await kv.get('authorized_users', { type: 'json' }) || [];
-  const leaderboard = await kv.get('global_leaderboard', { type: 'json' }) || {};
-  const blacklist = await kv.get('blacklisted_users', { type: 'json' }) || [];
-  
   if (authUsers.length === 0) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '暂无认证用户。');
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '当前无认证用户。');
     return;
   }
-  
-  let msg = '<b>认证用户列表</b>\n';
-  for (const uid of authUsers) {
-    const stat = leaderboard[uid];
-    const name = stat ? stat.name : '未知';
-    const count = stat ? stat.count : 0;
-    const isBanned = blacklist.includes(uid) ? '（已拉黑）' : '';
-    msg += `\nID: <code>${uid}</code> — ${escapeHtml(name)} | 翻译次数: ${count} ${isBanned}`;
+
+  const stats = await kv.get('global_leaderboard', { type: 'json' }) || {};
+
+  let msgText = '<b>已认证用户列表</b>\n\n';
+  for (const userId of authUsers) {
+    const userStats = stats[userId] || { name: '未知用户', total: 0, myMemory: 0, deepSeek: 0, baidu: 0, genfile: 0 };
+    msgText += `<b>${escapeHtml(userStats.name)}</b> (ID: ${userId})\n`;
+    msgText += `  总次数: ${userStats.total || 0}\n`;
+    msgText += `  MyMemory: ${userStats.myMemory || 0}  DeepSeek: ${userStats.deepSeek || 0}  百度: ${userStats.baidu || 0}  生成文件: ${userStats.genfile || 0}\n\n`;
   }
-  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, msg);
+
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, msgText);
 }
 
-async function handleUserStats(msg, env) {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  if (!isAdmin(env, userId)) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '无权限，仅管理员可执行此操作。');
+async function handleBanAuth(msg, env) {
+  if (msg.from.id.toString() !== env.ADMIN_ID) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '无权限。');
     return;
   }
+
   const parts = msg.text.trim().split(/\s+/);
   if (parts.length < 2) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '使用方法：<code>/userstats &lt;用户ID&gt;</code>');
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '使用方法：<code>/banauth &lt;用户ID&gt;</code>');
     return;
   }
-  const targetUserId = parts[1];
-  const kv = env.USER_STATS_KV;
-  if (!kv) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, '存储未配置。');
+
+  const targetId = parts[1];
+  await banUser(env, targetId);
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `已将用户 ${targetId} 拉黑并取消认证。`);
+}
+
+async function handleKickAuth(msg, env) {
+  if (msg.from.id.toString() !== env.ADMIN_ID) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '无权限。');
     return;
   }
-  const leaderboard = await kv.get('global_leaderboard', { type: 'json' }) || {};
-  const stat = leaderboard[targetUserId];
-  if (!stat) {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `用户 ${targetUserId} 暂无翻译记录。`);
-  } else {
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, 
-      `用户 <code>${targetUserId}</code>（${escapeHtml(stat.name)}）\n翻译次数：${stat.count}`);
+
+  const parts = msg.text.trim().split(/\s+/);
+  if (parts.length < 2) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '使用方法：<code>/kickauth &lt;用户ID&gt;</code>');
+    return;
   }
+
+  const targetId = parts[1];
+  await kickAuthUser(env, targetId);
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `已取消用户 ${targetId} 的认证，该用户仍可重新认证。`);
 }
 
 // ==================== 翻译服务 ====================
@@ -700,7 +674,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       const quote = await getRandomQuote(env);
       const fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
       await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
-      await incrementUserStat(env, fromUser);
+      await incrementUserStat(env, fromUser, 'genfile');
       await deletePendingForward(env, pendingId);
       await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
       return;
@@ -742,6 +716,11 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
 
     if (service === 'ds') {
       const userId = fromUser.id;
+      // 检查黑名单
+      if (await isUserBanned(env, userId)) {
+        await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId, '您已被管理员拉黑，无法使用 DeepSeek 翻译。');
+        return;
+      }
       const authorized = await isUserAuthorized(env, userId);
       if (!authorized) {
         await editMessageText(env.TELEGRAM_BOT_TOKEN, chatId, messageId,
@@ -764,7 +743,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
-        // 统一 DEBUG 输出：多行 Token + 译文预览
+        // DEBUG 输出
         let debugMsg = `[DEBUG] 翻译服务：DeepSeek AI (deepseek-v4-flash)\n`;
         debugMsg += `耗时：${result.duration} ms\n`;
         if (result.usage) {
@@ -778,7 +757,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `<pre>${escapeHtml(debugMsg)}</pre>`);
 
         await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
-        await incrementUserStat(env, fromUser);
+        await incrementUserStat(env, fromUser, 'deepSeek');
         await deletePendingForward(env, pendingId);
         await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
       } catch (e) {
@@ -802,7 +781,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
-        // 统一 DEBUG 输出：语言检测 + 译文预览
+        // DEBUG 输出
         let debugMsg = `[DEBUG] 翻译服务：百度翻译\n`;
         debugMsg += `文本长度：${result.debugInfo.textLength}\n`;
         const respData = result.debugInfo.responseData;
@@ -815,7 +794,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `<pre>${escapeHtml(debugMsg)}</pre>`);
 
         await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
-        await incrementUserStat(env, fromUser);
+        await incrementUserStat(env, fromUser, 'baidu');
         await deletePendingForward(env, pendingId);
         await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
       } catch (e) {
@@ -852,7 +831,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       const quote = await getRandomQuote(env);
       const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
-      // 统一 DEBUG 输出
       let debugMsg = `[DEBUG] 翻译服务：MyMemory\n`;
       debugMsg += `源语言：${escapeHtml(sourceLang)}\n`;
       debugMsg += `耗时：${result.duration} ms\n`;
@@ -861,7 +839,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `<pre>${escapeHtml(debugMsg)}</pre>`);
 
       await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
-      await incrementUserStat(env, fromUser);
+      await incrementUserStat(env, fromUser, 'myMemory');
       await deletePendingForward(env, pendingId);
       await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
     } catch (e) {
