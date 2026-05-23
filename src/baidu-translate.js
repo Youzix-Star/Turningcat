@@ -202,7 +202,7 @@ var MD5 = function (string) {
     return temp.toLowerCase();
 };
 
-// ---------- 百度翻译 API 调用 ----------
+// ---------- 百度翻译 API 调用（带 DEBUG） ----------
 export async function translateBaidu(text, appId, secretKey) {
   const startTime = Date.now();
   if (!appId || !secretKey) throw new Error('未配置百度翻译 API 密钥');
@@ -217,29 +217,49 @@ export async function translateBaidu(text, appId, secretKey) {
 
   const salt = String(Date.now());
   // 签名：MD5(appid + 原始文本 + salt + secret)
-  // 注意：拼接时使用原始文本，不进行任何编码，MD5 内部会处理 UTF-8
   const rawStr = appId + textToTranslate + salt + secretKey;
   const sign = MD5(rawStr);
 
+  // 准备调试信息（不包含 secretKey）
+  const debugInfo = {
+    salt,
+    sign,
+    appId,
+    textLength: textToTranslate.length,
+    truncated,
+    // 只展示拼接字符串的前面部分（不包含密钥）
+    rawStrPreview: (appId + textToTranslate.substring(0, 50) + '...' + salt + '***').substring(0, 200)
+  };
+
   const params = new URLSearchParams();
-  params.append('q', textToTranslate); // 这里由 URLSearchParams 自动编码
+  params.append('q', textToTranslate);
   params.append('from', 'auto');
   params.append('to', 'zh');
   params.append('appid', appId);
   params.append('salt', salt);
   params.append('sign', sign);
 
-  const response = await fetch('https://api.fanyi.baidu.com/api/trans/vip/translate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString()
-  });
-  const duration = Date.now() - startTime;
+  let response, data;
+  try {
+    response = await fetch('https://api.fanyi.baidu.com/api/trans/vip/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    });
+    data = await response.json();
+  } catch (e) {
+    e.debugInfo = debugInfo;
+    throw e;
+  }
 
-  const data = await response.json();
+  const duration = Date.now() - startTime;
+  debugInfo.duration = duration;
+  debugInfo.responseData = data;
 
   if (data.error_code) {
-    throw new Error(`百度翻译错误 (${data.error_code}): ${data.error_msg || '未知错误'}`);
+    const error = new Error(`百度翻译错误 (${data.error_code}): ${data.error_msg || '未知错误'}`);
+    error.debugInfo = debugInfo;
+    throw error;
   }
 
   if (data.trans_result && data.trans_result.length > 0) {
@@ -247,8 +267,10 @@ export async function translateBaidu(text, appId, secretKey) {
     if (truncated) {
       translated += '\n\n[原文超过1800字符，已截断翻译]';
     }
-    return { text: translated, duration };
+    return { text: translated, duration, debugInfo };
   } else {
-    throw new Error('百度翻译返回数据为空');
+    const error = new Error('百度翻译返回数据为空');
+    error.debugInfo = debugInfo;
+    throw error;
   }
 }
