@@ -202,7 +202,7 @@ var MD5 = function (string) {
     return temp.toLowerCase();
 };
 
-// ---------- 百度翻译 API 调用（带 DEBUG） ----------
+// ---------- 百度翻译 API 调用（增强 DEBUG，修复双重编码） ----------
 export async function translateBaidu(text, appId, secretKey) {
   const startTime = Date.now();
   if (!appId || !secretKey) throw new Error('未配置百度翻译 API 密钥');
@@ -216,35 +216,31 @@ export async function translateBaidu(text, appId, secretKey) {
   }
 
   const salt = String(Date.now());
-  // 签名：MD5(appid + 原始文本 + salt + secret)，使用原始文本
+  // 签名：MD5(appid + 原始文本 + salt + 密钥)
   const rawStr = appId + textToTranslate + salt + secretKey;
   const sign = MD5(rawStr);
 
-  // 准备调试信息（不包含 secretKey）
+  // 手动拼接请求体，只对 q 进行一次编码，避免双重编码
+  const encodedQ = encodeURIComponent(textToTranslate);
+  const requestBody = `q=${encodedQ}&from=auto&to=zh&appid=${appId}&salt=${salt}&sign=${sign}`;
+
+  // 增强 DEBUG 信息（包含拼接原文，注意不要泄露密钥）
   const debugInfo = {
     salt,
     sign,
     appId,
     textLength: textToTranslate.length,
     truncated,
-    rawStrPreview: (appId + textToTranslate.substring(0, 50) + '...' + salt + '***').substring(0, 200)
+    rawStrPreview: (appId + textToTranslate.substring(0, 50) + '...' + salt + '***').substring(0, 200),
+    requestBodyPreview: requestBody.substring(0, 300)
   };
-
-  // 构造请求参数，对 q 手动编码，防止 + 号等特殊字符被错误解析
-  const params = new URLSearchParams();
-  params.append('q', encodeURIComponent(textToTranslate));
-  params.append('from', 'auto');
-  params.append('to', 'zh');
-  params.append('appid', appId);
-  params.append('salt', salt);
-  params.append('sign', sign);
 
   let response, data;
   try {
     response = await fetch('https://api.fanyi.baidu.com/api/trans/vip/translate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: params.toString()
+      body: requestBody
     });
     data = await response.json();
   } catch (e) {
