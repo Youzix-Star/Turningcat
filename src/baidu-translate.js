@@ -217,14 +217,14 @@ export async function translateBaidu(text, appId, secretKey) {
 
   const salt = String(Date.now());
 
-  // 关键修复：用于签名的文本里将换行符 \n 替换为空格，保证拼接的连续性
-  const textForSign = textToTranslate.replace(/\n/g, ' ');
+  // 关键修复：用于签名的文本将所有类型的换行符（\r\n、\r、\n）替换为空格
+  const textForSign = textToTranslate.replace(/\r?\n|\r/g, ' ');
 
   // 签名原文（使用处理后的文本）
   const rawStr = appId + textForSign + salt + secretKey;
   const sign = MD5(rawStr);
 
-  // 请求体中的 q 仍然使用原始文本（保留换行结构）
+  // 请求体中的 q 仍然使用原始文本（保留换行结构），以确保翻译保留段落
   const encodedQ = encodeURIComponent(textToTranslate);
   const requestBody = `q=${encodedQ}&from=auto&to=zh&appid=${appId}&salt=${salt}&sign=${sign}`;
 
