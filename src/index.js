@@ -592,12 +592,17 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
-        // 统一的 DEBUG 输出
+        // 统一 DEBUG 输出：多行 Token + 译文预览
         let debugMsg = `[DEBUG] 翻译服务：DeepSeek AI (deepseek-v4-flash)\n`;
         debugMsg += `耗时：${result.duration} ms\n`;
         if (result.usage) {
-          debugMsg += `Token 使用 → Prompt: ${result.usage.prompt_tokens || '?'}  Completion: ${result.usage.completion_tokens || '?'}  Total: ${result.usage.total_tokens || '?'}`;
+          debugMsg += `Token 使用：\n`;
+          debugMsg += `  Prompt：${result.usage.prompt_tokens || '?'}\n`;
+          debugMsg += `  Completion：${result.usage.completion_tokens || '?'}\n`;
+          debugMsg += `  Total：${result.usage.total_tokens || '?'}\n`;
         }
+        const preview = result.text.substring(0, 60) + (result.text.length > 60 ? '…' : '');
+        debugMsg += `译文预览：${preview}`;
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `<pre>${escapeHtml(debugMsg)}</pre>`);
 
         await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
@@ -625,14 +630,16 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
-        // 统一格式的 DEBUG 输出（无敏感信息，额外展示检测到的语言）
+        // 统一 DEBUG 输出：语言检测 + 译文预览
         let debugMsg = `[DEBUG] 翻译服务：百度翻译\n`;
         debugMsg += `文本长度：${result.debugInfo.textLength}\n`;
         const respData = result.debugInfo.responseData;
         if (respData && respData.from) {
-          debugMsg += `源语言：${respData.from} → ${respData.to}\n`;
+          debugMsg += `检测语言：${respData.from} → ${respData.to}\n`;
         }
-        debugMsg += `耗时：${result.duration} ms`;
+        debugMsg += `耗时：${result.duration} ms\n`;
+        const preview = result.text.substring(0, 60) + (result.text.length > 60 ? '…' : '');
+        debugMsg += `译文预览：${preview}`;
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `<pre>${escapeHtml(debugMsg)}</pre>`);
 
         await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
@@ -640,7 +647,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         await deletePendingForward(env, pendingId);
         await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
       } catch (e) {
-        // 失败时不暴露敏感信息，只显示错误详情
         let errorMsg = `百度翻译失败：${e.message}`;
         if (e.debugInfo && e.debugInfo.responseData) {
           const errData = e.debugInfo.responseData;
@@ -674,9 +680,12 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       const quote = await getRandomQuote(env);
       const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
+      // 统一 DEBUG 输出
       let debugMsg = `[DEBUG] 翻译服务：MyMemory\n`;
       debugMsg += `源语言：${escapeHtml(sourceLang)}\n`;
-      debugMsg += `耗时：${result.duration} ms`;
+      debugMsg += `耗时：${result.duration} ms\n`;
+      const preview = result.text.substring(0, 60) + (result.text.length > 60 ? '…' : '');
+      debugMsg += `译文预览：${preview}`;
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, `<pre>${escapeHtml(debugMsg)}</pre>`);
 
       await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
