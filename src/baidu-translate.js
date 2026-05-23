@@ -202,14 +202,15 @@ var MD5 = function (string) {
     return temp.toLowerCase();
 };
 
-// ---------- 百度翻译 API 调用（彻底消除换行符） ----------
+// ---------- 百度翻译 API 调用（保留换行 + auto 源语言） ----------
 export async function translateBaidu(text, appId, secretKey) {
   const startTime = Date.now();
   if (!appId || !secretKey) throw new Error('未配置百度翻译 API 密钥');
 
   const MAX_CHARS = 1800;
-  // 将原始文本的换行符全部替换成空格，形成单行文本
-  let textToTranslate = text.replace(/\r?\n|\r/g, ' ');
+  
+  // 规范化换行符：所有 \r\n 和 \r 都统一为 \n
+  let textToTranslate = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   let truncated = false;
   if (textToTranslate.length > MAX_CHARS) {
     textToTranslate = textToTranslate.substring(0, MAX_CHARS);
@@ -218,7 +219,7 @@ export async function translateBaidu(text, appId, secretKey) {
 
   const salt = String(Date.now());
 
-  // 签名原文和请求体使用完全相同的单行文本
+  // 签名原文和请求体使用相同的规范化文本（保留 \n）
   const rawStr = appId + textToTranslate + salt + secretKey;
   const sign = MD5(rawStr);
 
@@ -229,9 +230,10 @@ export async function translateBaidu(text, appId, secretKey) {
     salt,
     sign,
     appId,
+    sourceLang: 'auto',
     textLength: textToTranslate.length,
     truncated,
-    rawStr,
+    rawStr,                       // 完整的签名原文（含规范化后的换行符）
     requestBody: requestBody.substring(0, 300)
   };
 
