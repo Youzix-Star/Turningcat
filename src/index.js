@@ -485,7 +485,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'no') {
-      // 保留原文
       const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
       const content = generateFileContent(format, title, forwardChat, forwardDate, originalText);
       const quote = await getRandomQuote(env);
@@ -498,7 +497,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'my') {
-      // MyMemory：需要选择源语言
       pendingData.service = 'my';
       await storePendingForward(env, pendingId, pendingData);
 
@@ -519,7 +517,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'ds') {
-      // DeepSeek AI：需检查认证
       const userId = fromUser.id;
       const authorized = await isUserAuthorized(env, userId);
       if (!authorized) {
@@ -543,7 +540,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
-        // 构造调试信息
         let debugMsg = `[DEBUG] 翻译服务：DeepSeek AI (deepseek-v4-flash)\n`;
         debugMsg += `耗时：${result.duration} ms\n`;
         if (result.usage) {
@@ -565,7 +561,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'bd') {
-      // 百度翻译
       try {
         const appId = env.BAIDU_APP_ID;
         const secretKey = env.BAIDU_SECRET_KEY;
