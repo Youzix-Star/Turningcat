@@ -1,6 +1,6 @@
 // src/index.js
 
-import { translateBaidu } from './baidu-translate.js';
+import { translateMyMemory, translateDeepSeek, translateBaidu } from './translate.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -107,12 +107,9 @@ async function handleListQuote(msg, env) {
     return;
   }
 
-  // 每页最多显示 10 条
   const pageSize = 10;
   const totalPages = Math.ceil(quotes.length / pageSize);
-  // 默认第一页
   const page = 1;
-
   const start = (page - 1) * pageSize;
   const end = start + pageSize;
   const pageQuotes = quotes.slice(start, end);
@@ -122,7 +119,6 @@ async function handleListQuote(msg, env) {
     text += `${start + i + 1}. ${escapeHtml(q)}\n`;
   });
 
-  // 如果有多页，显示页码提示
   if (totalPages > 1) {
     text += `\n第 ${page}/${totalPages} 页`;
   }
@@ -244,7 +240,6 @@ async function editMessageRemoveKeyboard(token, chatId, messageId) {
 }
 
 // ==================== 认证与黑名单系统 ====================
-
 async function isUserAuthorized(env, userId) {
   const kv = env.USER_STATS_KV;
   if (!kv) return false;
@@ -343,8 +338,7 @@ async function handleAuth(msg, env) {
   }
 }
 
-// ==================== 管理员命令（保留） ====================
-
+// ==================== 管理员命令 ====================
 async function handleBanAuth(msg, env) {
   if (msg.from.id.toString() !== env.ADMIN_ID) {
     await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '无权限。');
@@ -373,7 +367,6 @@ async function handleUnbanAuth(msg, env) {
 }
 
 // ==================== 带按钮的用户列表 ====================
-
 async function buildUserListMessage(env) {
   const kv = env.USER_STATS_KV;
   if (!kv) return { text: 'KV 未配置', keyboard: [] };
@@ -443,95 +436,6 @@ async function handleListAuth(token, chatId, fromUserId, env, messageIdToEdit) {
       })
     });
   }
-}
-
-// ==================== 翻译服务 ====================
-
-async function translateMyMemory(text, sourceLang, email) {
-  const startTime = Date.now();
-  const MAX_CHARS = 500;
-  let textToTranslate = text;
-  let truncated = false;
-  if (text.length > MAX_CHARS) {
-    textToTranslate = text.substring(0, MAX_CHARS);
-    truncated = true;
-  }
-  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=${sourceLang}|zh-CN&de=${encodeURIComponent(email)}`;
-
-  const resp = await fetch(url);
-  const data = await resp.json();
-  const duration = Date.now() - startTime;
-
-  if (data.responseStatus !== 200) {
-    throw new Error(`MyMemory 错误: ${data.responseDetails || JSON.stringify(data)}`);
-  }
-  if (!data.responseData || !data.responseData.translatedText) {
-    throw new Error('MyMemory 返回空翻译');
-  }
-  let translated = data.responseData.translatedText;
-  if (truncated) {
-    translated += '\n\n[原文超过500字符，已截断翻译]';
-  }
-  return { text: translated, duration };
-}
-
-async function translateDeepSeek(text, apiKey) {
-  const startTime = Date.now();
-  if (!apiKey) throw new Error('未配置 DeepSeek API Key');
-
-  const MAX_CHARS = 4000;
-  let textToTranslate = text;
-  let truncated = false;
-  if (text.length > MAX_CHARS) {
-    textToTranslate = text.substring(0, MAX_CHARS);
-    truncated = true;
-  }
-
-  const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: 'deepseek-v4-flash',
-      messages: [
-        {
-          role: 'system',
-          content: '你是一个专业的翻译助手。请将用户提供的文本翻译成简体中文。只输出翻译结果，不要任何额外解释或标记。'
-        },
-        {
-          role: 'user',
-          content: textToTranslate
-        }
-      ],
-      temperature: 0.1,
-      max_tokens: 2000
-    })
-  });
-  const duration = Date.now() - startTime;
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`DeepSeek API 请求失败 (${response.status}): ${err}`);
-  }
-
-  const data = await response.json();
-  const translated = data.choices?.[0]?.message?.content?.trim();
-
-  if (!translated) {
-    throw new Error('DeepSeek 返回空翻译');
-  }
-
-  const usage = data.usage || {};
-  if (truncated) {
-    return {
-      text: translated + '\n\n[原文过长，已截断翻译]',
-      duration,
-      usage
-    };
-  }
-  return { text: translated, duration, usage };
 }
 
 // ==================== 文件内容生成 ====================
@@ -696,6 +600,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   const messageId = msg.message_id;
   const fromUser = callbackQuery.from;
 
+  // ---------- 管理员操作按钮 ----------
   if (data.startsWith('admin_action:')) {
     if (fromUser.id.toString() !== env.ADMIN_ID) {
       await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
@@ -724,6 +629,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
+  // ---------- MyMemory 超长确认 ----------
   if (data.startsWith('confirm_my:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -759,6 +665,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
+  // ---------- 翻译服务选择 ----------
   if (data.startsWith('translate_service:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -905,6 +812,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
   }
 
+  // ---------- MyMemory 翻译 ----------
   if (data.startsWith('source_lang:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -943,6 +851,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
+  // ---------- 格式选择后询问翻译服务 ----------
   if (data.startsWith('select_media_format:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -975,6 +884,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
+  // 媒体组：文件选择
   if (data.startsWith('select_file:')) {
     const parts = data.split(':');
     const mediaGroupId = parts[1];
