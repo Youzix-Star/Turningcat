@@ -39,16 +39,14 @@ export default {
         } else if (text === '/help') {
           let helpMsg = '<b>可用命令</b>\n/start - 开始使用\n/genfile - 生成示例文件\n/rank - 查看使用排行\n/auth - 认证 DeepSeek 使用权限\n/help - 显示帮助\n\n转发频道消息即可生成文件。';
           if (msg.from.id.toString() === env.ADMIN_ID) {
-            helpMsg += '\n\n<b>管理员命令</b>\n/listauth - 查看并管理认证/拉黑用户\n（点击按钮即可操作，无需手动输入指令）';
+            helpMsg += '\n\n<b>管理员命令</b>\n/listauth - 查看并管理认证/拉黑用户\n（点击按钮即可操作）';
           }
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, helpMsg);
         } else if (text.startsWith('/auth')) {
           await handleAuth(msg, env);
         } else if (text === '/listauth') {
           await handleListAuth(env.TELEGRAM_BOT_TOKEN, msg.chat.id, msg.from.id, env, null);
-        }
-        // 旧的命令保留以兼容，但功能已由按钮取代
-        else if (text.startsWith('/banauth')) {
+        } else if (text.startsWith('/banauth')) {
           await handleBanAuth(msg, env);
         } else if (text.startsWith('/kickauth')) {
           await handleKickAuth(msg, env);
@@ -307,7 +305,7 @@ async function handleAuth(msg, env) {
   }
 }
 
-// ==================== 管理员命令（保留的斜杠命令，内部可用） ====================
+// ==================== 管理员命令（保留） ====================
 
 async function handleBanAuth(msg, env) {
   if (msg.from.id.toString() !== env.ADMIN_ID) {
@@ -336,7 +334,7 @@ async function handleUnbanAuth(msg, env) {
   await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `已解封用户 <code>${parts[1]}</code>。`);
 }
 
-// ==================== 带按钮的用户管理列表 ====================
+// ==================== 带按钮的用户列表 ====================
 
 async function buildUserListMessage(env) {
   const kv = env.USER_STATS_KV;
@@ -351,36 +349,35 @@ async function buildUserListMessage(env) {
 
   // 已认证用户
   if (authUsers.length > 0) {
-    msgText += '<b>✅ 已认证用户</b>\n';
+    msgText += '<b>[认证用户]</b>\n';
     for (const userId of authUsers) {
       const userStats = stats[userId] || { name: '未知用户', total: 0, myMemory: 0, deepSeek: 0, baidu: 0, genfile: 0 };
       msgText += `  <code>${userId}</code> - ${escapeHtml(userStats.name)}\n`;
-      msgText += `  📊 总:${userStats.total || 0} | MyMemory:${userStats.myMemory || 0} | DeepSeek:${userStats.deepSeek || 0} | 百度:${userStats.baidu || 0} | 文件:${userStats.genfile || 0}\n`;
+      msgText += `  总:${userStats.total || 0}  MyMemory:${userStats.myMemory || 0}  DeepSeek:${userStats.deepSeek || 0}  百度:${userStats.baidu || 0}  文件:${userStats.genfile || 0}\n`;
 
-      // 每个用户一行操作按钮：Kick 和 Ban
       inlineKeyboard.push([
-        { text: '👢 踢出', callback_data: `admin_action:kick:${userId}` },
-        { text: '🚫 拉黑', callback_data: `admin_action:ban:${userId}` }
+        { text: '踢出', callback_data: `admin_action:kick:${userId}` },
+        { text: '拉黑', callback_data: `admin_action:ban:${userId}` }
       ]);
     }
     msgText += '\n';
   } else {
-    msgText += '<b>✅ 已认证用户</b>\n  暂无\n\n';
+    msgText += '<b>[认证用户]</b>\n  暂无\n\n';
   }
 
   // 被拉黑用户
   if (bannedUsers.length > 0) {
-    msgText += '<b>🚫 被拉黑用户</b>\n';
+    msgText += '<b>[被拉黑用户]</b>\n';
     for (const userId of bannedUsers) {
       const userStats = stats[userId] || { name: '未知用户', total: 0 };
       msgText += `  <code>${userId}</code> - ${escapeHtml(userStats.name)} (总次数: ${userStats.total || 0})\n`;
 
       inlineKeyboard.push([
-        { text: '🔓 解封', callback_data: `admin_action:unban:${userId}` }
+        { text: '解封', callback_data: `admin_action:unban:${userId}` }
       ]);
     }
   } else {
-    msgText += '<b>🚫 被拉黑用户</b>\n  暂无';
+    msgText += '<b>[被拉黑用户]</b>\n  暂无';
   }
 
   return { text: msgText, keyboard: inlineKeyboard };
@@ -675,21 +672,15 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     const parts = data.split(':');
-    const action = parts[1]; // kick / ban / unban
+    const action = parts[1];
     const targetId = parts[2];
 
-    if (action === 'kick') {
-      await kickAuthUser(env, targetId);
-    } else if (action === 'ban') {
-      await banUser(env, targetId);
-    } else if (action === 'unban') {
-      await unbanUser(env, targetId);
-    }
+    if (action === 'kick') await kickAuthUser(env, targetId);
+    else if (action === 'ban') await banUser(env, targetId);
+    else if (action === 'unban') await unbanUser(env, targetId);
 
-    // 刷新列表消息
     await handleListAuth(env.TELEGRAM_BOT_TOKEN, chatId, fromUser.id, env, messageId);
 
-    // 反馈操作成功
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -881,7 +872,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
   }
 
-  // ---------- 选择源语言后翻译（MyMemory） ----------
   if (data.startsWith('source_lang:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -920,7 +910,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // ---------- 格式选择后询问翻译服务 ----------
   if (data.startsWith('select_media_format:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -953,7 +942,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // 媒体组：文件选择
   if (data.startsWith('select_file:')) {
     const parts = data.split(':');
     const mediaGroupId = parts[1];
