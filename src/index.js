@@ -36,10 +36,12 @@ export default {
           await handleRank(env.TELEGRAM_BOT_TOKEN, chatId, env);
         } else if (text.startsWith('/addquote')) {
           await handleAddQuote(msg, env);
+        } else if (text === '/listquote') {
+          await handleListQuote(msg, env);
         } else if (text === '/help') {
-          let helpMsg = '<b>可用命令</b>\n/start - 开始使用\n/genfile - 生成示例文件\n/rank - 查看使用排行\n/auth - 认证 DeepSeek 使用权限\n/help - 显示帮助\n\n转发频道消息即可生成文件。';
+          let helpMsg = '<b>可用命令</b>\n/start - 开始使用\n/genfile - 生成示例文件\n/rank - 查看使用排行\n/auth - 认证 DeepSeek 使用权限\n/listquote - 查看所有语录\n/help - 显示帮助\n\n转发频道消息即可生成文件。';
           if (msg.from.id.toString() === env.ADMIN_ID) {
-            helpMsg += '\n\n<b>管理员命令</b>\n/listauth - 查看并管理认证/拉黑用户\n（点击按钮即可操作）';
+            helpMsg += '\n\n<b>管理员命令</b>\n/listauth - 查看并管理认证/拉黑用户\n/addquote - 添加自定义语录';
           }
           await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, helpMsg);
         } else if (text.startsWith('/auth')) {
@@ -90,6 +92,42 @@ async function handleAddQuote(msg, env) {
   quotes.push(newQuote);
   await kv.put('cat_quotes', JSON.stringify(quotes));
   await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, `已添加语录：${newQuote}`);
+}
+
+async function handleListQuote(msg, env) {
+  const kv = env.USER_STATS_KV;
+  let quotes = DEFAULT_QUOTES;
+  if (kv) {
+    const stored = await kv.get('cat_quotes', { type: 'json' });
+    if (stored && stored.length > 0) quotes = stored;
+  }
+
+  if (quotes.length === 0) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '暂无语录。');
+    return;
+  }
+
+  // 每页最多显示 10 条
+  const pageSize = 10;
+  const totalPages = Math.ceil(quotes.length / pageSize);
+  // 默认第一页
+  const page = 1;
+
+  const start = (page - 1) * pageSize;
+  const end = start + pageSize;
+  const pageQuotes = quotes.slice(start, end);
+
+  let text = `<b>语录列表 (${quotes.length} 条)</b>\n`;
+  pageQuotes.forEach((q, i) => {
+    text += `${start + i + 1}. ${escapeHtml(q)}\n`;
+  });
+
+  // 如果有多页，显示页码提示
+  if (totalPages > 1) {
+    text += `\n第 ${page}/${totalPages} 页`;
+  }
+
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, text);
 }
 
 // ==================== 统计 ====================
@@ -347,7 +385,6 @@ async function buildUserListMessage(env) {
   let msgText = '';
   const inlineKeyboard = [];
 
-  // 已认证用户
   if (authUsers.length > 0) {
     msgText += '<b>[认证用户]</b>\n';
     for (const userId of authUsers) {
@@ -365,7 +402,6 @@ async function buildUserListMessage(env) {
     msgText += '<b>[认证用户]</b>\n  暂无\n\n';
   }
 
-  // 被拉黑用户
   if (bannedUsers.length > 0) {
     msgText += '<b>[被拉黑用户]</b>\n';
     for (const userId of bannedUsers) {
@@ -660,7 +696,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
   const messageId = msg.message_id;
   const fromUser = callbackQuery.from;
 
-  // ---------- 管理员操作按钮 ----------
   if (data.startsWith('admin_action:')) {
     if (fromUser.id.toString() !== env.ADMIN_ID) {
       await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
@@ -689,7 +724,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // ---------- MyMemory 超长确认 ----------
   if (data.startsWith('confirm_my:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
@@ -725,7 +759,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // ---------- 翻译服务选择 ----------
   if (data.startsWith('translate_service:')) {
     const parts = data.split(':');
     const pendingId = parts[1];
