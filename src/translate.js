@@ -1,6 +1,6 @@
-// src/baidu-translate.js
+// src/translate.js
 
-// ---------- 百度官方 MD5 实现（支持 UTF-8） ----------
+// ==================== 百度官方 MD5 实现（支持 UTF-8） ====================
 var MD5 = function (string) {
   
     function RotateLeft(lValue, iShiftBits) {
@@ -202,15 +202,102 @@ var MD5 = function (string) {
     return temp.toLowerCase();
 };
 
-// ---------- 百度翻译 API 调用（保留换行 + auto 源语言） ----------
+// ==================== MyMemory 翻译 ====================
+export async function translateMyMemory(text, sourceLang, email) {
+  const startTime = Date.now();
+  const MAX_CHARS = 500;
+  let textToTranslate = text;
+  let truncated = false;
+  if (text.length > MAX_CHARS) {
+    textToTranslate = text.substring(0, MAX_CHARS);
+    truncated = true;
+  }
+  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=${sourceLang}|zh-CN&de=${encodeURIComponent(email)}`;
+
+  const resp = await fetch(url);
+  const data = await resp.json();
+  const duration = Date.now() - startTime;
+
+  if (data.responseStatus !== 200) {
+    throw new Error(`MyMemory 错误: ${data.responseDetails || JSON.stringify(data)}`);
+  }
+  if (!data.responseData || !data.responseData.translatedText) {
+    throw new Error('MyMemory 返回空翻译');
+  }
+  let translated = data.responseData.translatedText;
+  if (truncated) {
+    translated += '\n\n[原文超过500字符，已截断翻译]';
+  }
+  return { text: translated, duration };
+}
+
+// ==================== DeepSeek AI 翻译 ====================
+export async function translateDeepSeek(text, apiKey) {
+  const startTime = Date.now();
+  if (!apiKey) throw new Error('未配置 DeepSeek API Key');
+
+  const MAX_CHARS = 4000;
+  let textToTranslate = text;
+  let truncated = false;
+  if (text.length > MAX_CHARS) {
+    textToTranslate = text.substring(0, MAX_CHARS);
+    truncated = true;
+  }
+
+  const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: 'deepseek-v4-flash',
+      messages: [
+        {
+          role: 'system',
+          content: '你是一个专业的翻译助手。请将用户提供的文本翻译成简体中文。只输出翻译结果，不要任何额外解释或标记。'
+        },
+        {
+          role: 'user',
+          content: textToTranslate
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 2000
+    })
+  });
+  const duration = Date.now() - startTime;
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`DeepSeek API 请求失败 (${response.status}): ${err}`);
+  }
+
+  const data = await response.json();
+  const translated = data.choices?.[0]?.message?.content?.trim();
+
+  if (!translated) {
+    throw new Error('DeepSeek 返回空翻译');
+  }
+
+  const usage = data.usage || {};
+  if (truncated) {
+    return {
+      text: translated + '\n\n[原文过长，已截断翻译]',
+      duration,
+      usage
+    };
+  }
+  return { text: translated, duration, usage };
+}
+
+// ==================== 百度翻译 ====================
 export async function translateBaidu(text, appId, secretKey) {
   const startTime = Date.now();
   if (!appId || !secretKey) throw new Error('未配置百度翻译 API 密钥');
 
   const MAX_CHARS = 1800;
-  
-  // 规范化换行符：所有 \r\n 和 \r 都统一为 \n
-  let textToTranslate = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  let textToTranslate = text.replace(/\r?\n|\r/g, '\n');
   let truncated = false;
   if (textToTranslate.length > MAX_CHARS) {
     textToTranslate = textToTranslate.substring(0, MAX_CHARS);
@@ -219,7 +306,7 @@ export async function translateBaidu(text, appId, secretKey) {
 
   const salt = String(Date.now());
 
-  // 签名原文和请求体使用相同的规范化文本（保留 \n）
+  // 签名：MD5(appid + 原始文本 + salt + secret)
   const rawStr = appId + textToTranslate + salt + secretKey;
   const sign = MD5(rawStr);
 
@@ -230,10 +317,9 @@ export async function translateBaidu(text, appId, secretKey) {
     salt,
     sign,
     appId,
-    sourceLang: 'auto',
     textLength: textToTranslate.length,
     truncated,
-    rawStr,                       // 完整的签名原文（含规范化后的换行符）
+    rawStr,
     requestBody: requestBody.substring(0, 300)
   };
 
