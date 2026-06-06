@@ -534,6 +534,22 @@ async function sendFileSelection(token, chatId, mediaGroupId, groupData) {
   });
 }
 
+// ==================== 提取软件名称 ====================
+function extractSoftwareName(title) {
+  // 去掉文件扩展名
+  const nameWithoutExt = title.replace(/\.(apk|APK|zip|ZIP|rar|RAR|7z|7Z|ipa|IPA|exe|EXE|msi|MSI|dmg|DMG|deb|DEB|rpm|RPM)$/i, '');
+  
+  // 截取第一个 - 或 _ 之前的部分
+  const match = nameWithoutExt.match(/^([^_-]+)/);
+  
+  if (match && match[1]) {
+    // 返回软件名称，保持原样
+    return match[1].trim();
+  }
+  
+  return null;
+}
+
 // ==================== 单文件转发处理 ====================
 async function handleForwardedMessage(msg, env, ctx) {
   if (msg.media_group_id && await handleMediaGroupMessage(msg, env, ctx)) return;
@@ -789,6 +805,12 @@ async function publishToLogSite(env, logData) {
       debugInfo.push(`无频道信息，跳过头像获取`);
     }
     
+    // 提取软件名称
+    debugInfo.push(`\n--- 提取标签 ---`);
+    const softwareName = extractSoftwareName(title);
+    debugInfo.push(`标题: ${title}`);
+    debugInfo.push(`提取的软件名: ${softwareName || '未识别'}`);
+    
     // 生成文件名
     const date = new Date(forwardDate * 1000);
     const dateStr = date.toISOString().split('T')[0];
@@ -807,6 +829,12 @@ async function publishToLogSite(env, logData) {
     const channelName = forwardChat?.title || '未知频道';
     const channelUsername = forwardChat?.username || '';
     
+    // 生成标签数组
+    const tags = [];
+    if (softwareName) {
+      tags.push(softwareName);
+    }
+    
     // 生成 Markdown 内容
     const content = `---
 title: "${title.replace(/"/g, '\\"')}"
@@ -817,6 +845,7 @@ channelUsername: "${channelUsername}"
 channelAvatar: "${avatarPath || ''}"
 format: ${format || 'txt'}
 translated: ${!!translatedText}
+tags: [${tags.map(t => `"${t}"`).join(', ')}]
 ---
 
 ## 原文
@@ -828,6 +857,7 @@ ${translatedText ? `## 简体中文
 ${translatedText}` : ''}
 `;
 
+    debugInfo.push(`标签: ${tags.length > 0 ? tags.join(', ') : '无'}`);
     debugInfo.push(`内容长度: ${content.length} 字符`);
     debugInfo.push(`头像路径: ${avatarPath || '无'}`);
     
