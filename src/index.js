@@ -814,12 +814,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         format
       });
       
-      // 发送结果信息
-      let resultMsg = `✅ 文件已生成`;
+      // 发送调试信息 + 博客链接
+      let resultMsg = `<pre>${escapeHtml(publishResult.debug)}</pre>`;
       if (publishResult.success && publishResult.url) {
         resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
-      } else if (!publishResult.success) {
-        resultMsg += `\n\n⚠️ 博客推送失败`;
       }
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, resultMsg);
       
@@ -910,12 +908,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
           format
         });
         
-        // 发送结果信息
-        let resultMsg = `✅ 文件已生成并推送至博客`;
+        // 发送调试信息 + 博客链接
+        let resultMsg = `<pre>${escapeHtml(publishResult.debug)}</pre>`;
         if (publishResult.success && publishResult.url) {
           resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
-        } else if (!publishResult.success) {
-          resultMsg += `\n\n⚠️ 博客推送失败`;
         }
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, resultMsg);
         
@@ -967,12 +963,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
           format
         });
         
-        // 发送结果信息
-        let resultMsg = `✅ 文件已生成并推送至博客`;
+        // 发送调试信息 + 博客链接
+        let resultMsg = `<pre>${escapeHtml(publishResult.debug)}</pre>`;
         if (publishResult.success && publishResult.url) {
           resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
-        } else if (!publishResult.success) {
-          resultMsg += `\n\n⚠️ 博客推送失败`;
         }
         await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, resultMsg);
         
@@ -1033,12 +1027,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         format
       });
       
-      // 发送结果信息
-      let resultMsg = `✅ 文件已生成并推送至博客`;
+      // 发送调试信息 + 博客链接
+      let resultMsg = `<pre>${escapeHtml(publishResult.debug)}</pre>`;
       if (publishResult.success && publishResult.url) {
         resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
-      } else if (!publishResult.success) {
-        resultMsg += `\n\n⚠️ 博客推送失败`;
       }
       await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, resultMsg);
       
