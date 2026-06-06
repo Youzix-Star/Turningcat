@@ -592,12 +592,174 @@ const LANG_OPTIONS = [
   { code: 'it', name: 'Italiano' },
 ];
 
+// ==================== 获取频道头像 ====================
+async function getChannelAvatar(env, chat) {
+  const debugInfo = [];
+  
+  try {
+    const token = env.TELEGRAM_BOT_TOKEN;
+    const chatId = chat.id;
+    const chatUsername = chat.username || '';
+    
+    debugInfo.push(`频道 ID: ${chatId}`);
+    debugInfo.push(`频道 Username: ${chatUsername || '无'}`);
+    
+    // 方式1: 通过 chat_id 获取
+    debugInfo.push(`尝试通过 chat_id 获取...`);
+    const chatResponse = await fetch(`https://api.telegram.org/bot${token}/getChat?chat_id=${chatId}`);
+    const chatData = await chatResponse.json();
+    debugInfo.push(`getChat 响应: ${chatData.ok ? '成功' : '失败'}`);
+    
+    if (chatData.ok && chatData.result.photo) {
+      debugInfo.push(`找到头像，获取文件路径...`);
+      const fileId = chatData.result.photo.small_file_id;
+      debugInfo.push(`File ID: ${fileId}`);
+      
+      const fileResponse = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`);
+      const fileData = await fileResponse.json();
+      debugInfo.push(`getFile 响应: ${fileData.ok ? '成功' : '失败'}`);
+      
+      if (fileData.ok) {
+        const avatarUrl = `https://api.telegram.org/file/bot${token}/${fileData.result.file_path}`;
+        debugInfo.push(`头像 URL: ${avatarUrl.substring(0, 50)}...`);
+        return { url: avatarUrl, debug: debugInfo.join('\n') };
+      }
+    } else {
+      debugInfo.push(`chat_id 方式未获取到头像`);
+      if (chatData.description) {
+        debugInfo.push(`原因: ${chatData.description}`);
+      }
+    }
+    
+    // 方式2: 通过 username 获取（如果有）
+    if (chatUsername) {
+      debugInfo.push(`尝试通过 @${chatUsername} 获取...`);
+      const usernameResponse = await fetch(`https://api.telegram.org/bot${token}/getChat?chat_id=@${chatUsername}`);
+      const usernameData = await usernameResponse.json();
+      debugInfo.push(`username getChat 响应: ${usernameData.ok ? '成功' : '失败'}`);
+      
+      if (usernameData.ok && usernameData.result.photo) {
+        debugInfo.push(`找到头像，获取文件路径...`);
+        const fileId = usernameData.result.photo.small_file_id;
+        const fileResponse = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`);
+        const fileData = await fileResponse.json();
+        
+        if (fileData.ok) {
+          const avatarUrl = `https://api.telegram.org/file/bot${token}/${fileData.result.file_path}`;
+          debugInfo.push(`头像 URL: ${avatarUrl.substring(0, 50)}...`);
+          return { url: avatarUrl, debug: debugInfo.join('\n') };
+        }
+      } else {
+        debugInfo.push(`username 方式未获取到头像`);
+        if (usernameData.description) {
+          debugInfo.push(`原因: ${usernameData.description}`);
+        }
+      }
+    }
+    
+    debugInfo.push(`❌ 所有方式均未获取到头像`);
+    return { url: null, debug: debugInfo.join('\n') };
+    
+  } catch (error) {
+    debugInfo.push(`❌ 异常: ${error.message}`);
+    return { url: null, debug: debugInfo.join('\n') };
+  }
+}
+
+// ==================== 下载并保存头像到 GitHub ====================
+async function saveAvatarToGitHub(env, avatarUrl, channelUsername) {
+  const debugInfo = [];
+  
+  try {
+    if (!avatarUrl || !env.GITHUB_TOKEN) {
+      debugInfo.push(`跳过保存: ${!avatarUrl ? '无头像URL' : '无GITHUB_TOKEN'}`);
+      return { path: null, debug: debugInfo.join('\n') };
+    }
+    
+    const owner = env.LOG_REPO_OWNER;
+    const repo = env.LOG_REPO_NAME;
+    const token = env.GITHUB_TOKEN;
+    
+    // 下载头像
+    debugInfo.push(`下载头像...`);
+    const avatarResponse = await fetch(avatarUrl);
+    debugInfo.push(`下载状态: ${avatarResponse.status}`);
+    
+    if (!avatarResponse.ok) {
+      debugInfo.push(`❌ 下载失败`);
+      return { path: null, debug: debugInfo.join('\n') };
+    }
+    
+    const avatarBuffer = await avatarResponse.arrayBuffer();
+    const avatarBase64 = btoa(String.fromCharCode(...new Uint8Array(avatarBuffer)));
+    debugInfo.push(`头像大小: ${avatarBuffer.byteLength} 字节`);
+    
+    // 生成文件名
+    const fileName = channelUsername ? `${channelUsername}.jpg` : `channel_${Date.now()}.jpg`;
+    const path = `public/avatars/${fileName}`;
+    debugInfo.push(`保存路径: ${path}`);
+    
+    // 检查文件是否已存在
+    const checkUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+    const checkRes = await fetch(checkUrl, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'User-Agent': 'Turningcat-Bot',
+        'Accept': 'application/vnd.github.v3+json'
+      }
+    });
+    
+    let sha = null;
+    if (checkRes.ok) {
+      const data = await checkRes.json();
+      sha = data.sha;
+      debugInfo.push(`文件已存在，将覆盖`);
+    } else {
+      debugInfo.push(`文件不存在，将创建`);
+    }
+    
+    // 上传头像
+    debugInfo.push(`上传到 GitHub...`);
+    const body = {
+      message: `🖼️ 更新频道头像: ${channelUsername || 'unknown'}`,
+      content: avatarBase64,
+      ...(sha && { sha })
+    };
+    
+    const response = await fetch(checkUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'User-Agent': 'Turningcat-Bot',
+        'Content-Type': 'application/json',
+        'Accept': 'application/vnd.github.v3+json'
+      },
+      body: JSON.stringify(body)
+    });
+    
+    debugInfo.push(`上传状态: ${response.status}`);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      debugInfo.push(`❌ 上传失败: ${errorText.substring(0, 100)}`);
+      return { path: null, debug: debugInfo.join('\n') };
+    }
+    
+    debugInfo.push(`✅ 保存成功!`);
+    return { path: `/avatars/${fileName}`, debug: debugInfo.join('\n') };
+    
+  } catch (error) {
+    debugInfo.push(`❌ 异常: ${error.message}`);
+    return { path: null, debug: debugInfo.join('\n') };
+  }
+}
+
 // ==================== GitHub 推送功能 ====================
 async function publishToLogSite(env, logData) {
   const debugInfo = [];
   
   try {
-    const { title, originalText, translatedText, forwardDate, channelLink, format } = logData;
+    const { title, originalText, translatedText, forwardDate, channelLink, format, forwardChat } = logData;
     
     // 检查环境变量
     debugInfo.push(`[DEBUG] 开始推送到博客...`);
@@ -610,11 +772,29 @@ async function publishToLogSite(env, logData) {
       return { success: false, debug: debugInfo.join('\n'), url: null };
     }
     
+    // 获取频道头像
+    debugInfo.push(`\n--- 获取频道头像 ---`);
+    let avatarPath = null;
+    if (forwardChat) {
+      const avatarResult = await getChannelAvatar(env, forwardChat);
+      debugInfo.push(avatarResult.debug);
+      
+      if (avatarResult.url) {
+        debugInfo.push(`\n--- 保存头像 ---`);
+        const saveResult = await saveAvatarToGitHub(env, avatarResult.url, forwardChat.username || `id${forwardChat.id}`);
+        debugInfo.push(saveResult.debug);
+        avatarPath = saveResult.path;
+      }
+    } else {
+      debugInfo.push(`无频道信息，跳过头像获取`);
+    }
+    
     // 生成文件名
     const date = new Date(forwardDate * 1000);
     const dateStr = date.toISOString().split('T')[0];
     const safeTitle = title.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '-').substring(0, 50);
     const fileName = `${dateStr}-${safeTitle}.md`;
+    debugInfo.push(`\n--- 推送文章 ---`);
     debugInfo.push(`文件名: ${fileName}`);
     
     // 生成文章 URL
@@ -623,11 +803,18 @@ async function publishToLogSite(env, logData) {
     const articleUrl = `${siteUrl}/log/${slug}/`;
     debugInfo.push(`文章链接: ${articleUrl}`);
     
+    // 频道信息
+    const channelName = forwardChat?.title || '未知频道';
+    const channelUsername = forwardChat?.username || '';
+    
     // 生成 Markdown 内容
     const content = `---
 title: "${title.replace(/"/g, '\\"')}"
 date: ${date.toISOString()}
 source: "${channelLink}"
+channelName: "${channelName.replace(/"/g, '\\"')}"
+channelUsername: "${channelUsername}"
+channelAvatar: "${avatarPath || ''}"
 format: ${format || 'txt'}
 translated: ${!!translatedText}
 ---
@@ -642,6 +829,7 @@ ${translatedText}` : ''}
 `;
 
     debugInfo.push(`内容长度: ${content.length} 字符`);
+    debugInfo.push(`头像路径: ${avatarPath || '无'}`);
     
     // 通过 GitHub API 创建文件
     const owner = env.LOG_REPO_OWNER;
@@ -650,10 +838,8 @@ ${translatedText}` : ''}
     const token = env.GITHUB_TOKEN;
     
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
-    debugInfo.push(`API URL: ${url}`);
     
     // 先检查文件是否已存在
-    debugInfo.push(`检查文件是否存在...`);
     const checkRes = await fetch(url, {
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -666,11 +852,6 @@ ${translatedText}` : ''}
     if (checkRes.ok) {
       const data = await checkRes.json();
       sha = data.sha;
-      debugInfo.push(`文件已存在，sha: ${sha}`);
-    } else if (checkRes.status === 404) {
-      debugInfo.push(`文件不存在，将创建新文件`);
-    } else {
-      debugInfo.push(`检查文件失败: ${checkRes.status}`);
     }
     
     // 创建或更新文件
@@ -680,7 +861,6 @@ ${translatedText}` : ''}
       ...(sha && { sha })
     };
     
-    debugInfo.push(`正在创建/更新文件...`);
     const response = await fetch(url, {
       method: 'PUT',
       headers: {
@@ -692,15 +872,14 @@ ${translatedText}` : ''}
       body: JSON.stringify(body)
     });
     
-    debugInfo.push(`响应状态: ${response.status}`);
+    debugInfo.push(`文章推送状态: ${response.status}`);
     
     if (!response.ok) {
       const errorText = await response.text();
-      debugInfo.push(`❌ API 错误: ${errorText.substring(0, 200)}`);
+      debugInfo.push(`❌ 推送失败: ${errorText.substring(0, 100)}`);
       return { success: false, debug: debugInfo.join('\n'), url: null };
     }
     
-    const responseData = await response.json();
     debugInfo.push(`✅ 推送成功!`);
     
     return { success: true, debug: debugInfo.join('\n'), url: articleUrl };
@@ -811,7 +990,8 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         translatedText: null,
         forwardDate,
         channelLink,
-        format
+        format,
+        forwardChat
       });
       
       // 发送调试信息 + 博客链接
@@ -905,7 +1085,8 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
           translatedText: result.text,
           forwardDate,
           channelLink,
-          format
+          format,
+          forwardChat
         });
         
         // 发送调试信息 + 博客链接
@@ -960,7 +1141,8 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
           translatedText: result.text,
           forwardDate,
           channelLink,
-          format
+          format,
+          forwardChat
         });
         
         // 发送调试信息 + 博客链接
@@ -1024,7 +1206,8 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         translatedText: result.text,
         forwardDate,
         channelLink,
-        format
+        format,
+        forwardChat
       });
       
       // 发送调试信息 + 博客链接
