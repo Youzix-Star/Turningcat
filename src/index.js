@@ -592,7 +592,7 @@ const LANG_OPTIONS = [
   { code: 'it', name: 'Italiano' },
 ];
 
-// ==================== GitHub 推送功能（带调试） ====================
+// ==================== GitHub 推送功能 ====================
 async function publishToLogSite(env, logData) {
   const debugInfo = [];
   
@@ -607,7 +607,7 @@ async function publishToLogSite(env, logData) {
     
     if (!env.GITHUB_TOKEN || !env.LOG_REPO_OWNER || !env.LOG_REPO_NAME) {
       debugInfo.push(`❌ 环境变量缺失，跳过推送`);
-      return { success: false, debug: debugInfo.join('\n') };
+      return { success: false, debug: debugInfo.join('\n'), url: null };
     }
     
     // 生成文件名
@@ -616,6 +616,12 @@ async function publishToLogSite(env, logData) {
     const safeTitle = title.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '-').substring(0, 50);
     const fileName = `${dateStr}-${safeTitle}.md`;
     debugInfo.push(`文件名: ${fileName}`);
+    
+    // 生成文章 URL
+    const siteUrl = env.LOG_SITE_URL || 'https://log.youzix.top';
+    const slug = fileName.replace('.md', '').toLowerCase();
+    const articleUrl = `${siteUrl}/log/${slug}/`;
+    debugInfo.push(`文章链接: ${articleUrl}`);
     
     // 生成 Markdown 内容
     const content = `---
@@ -691,17 +697,16 @@ ${translatedText}` : ''}
     if (!response.ok) {
       const errorText = await response.text();
       debugInfo.push(`❌ API 错误: ${errorText.substring(0, 200)}`);
-      return { success: false, debug: debugInfo.join('\n') };
+      return { success: false, debug: debugInfo.join('\n'), url: null };
     }
     
     const responseData = await response.json();
     debugInfo.push(`✅ 推送成功!`);
-    debugInfo.push(`文件 URL: ${responseData.content?.html_url || '未知'}`);
     
-    return { success: true, debug: debugInfo.join('\n') };
+    return { success: true, debug: debugInfo.join('\n'), url: articleUrl };
   } catch (error) {
     debugInfo.push(`❌ 异常: ${error.message}`);
-    return { success: false, debug: debugInfo.join('\n') };
+    return { success: false, debug: debugInfo.join('\n'), url: null };
   }
 }
 
@@ -798,7 +803,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
       await incrementUserStat(env, fromUser, 'genfile');
       
-      // 推送到博客（带调试）
+      // 推送到博客
       const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '(私有频道)';
       const publishResult = await publishToLogSite(env, {
         title,
@@ -809,9 +814,14 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         format
       });
       
-      // 发送调试信息
-      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, 
-        `<pre>${escapeHtml(publishResult.debug)}</pre>`);
+      // 发送结果信息
+      let resultMsg = `✅ 文件已生成`;
+      if (publishResult.success && publishResult.url) {
+        resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
+      } else if (!publishResult.success) {
+        resultMsg += `\n\n⚠️ 博客推送失败`;
+      }
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, resultMsg);
       
       await deletePendingForward(env, pendingId);
       await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
@@ -877,13 +887,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
-        let debugMsg = `[DEBUG] 翻译服务：DeepSeek AI (deepseek-v4-flash)\n`;
+        let debugMsg = `[DEBUG] 翻译服务：DeepSeek AI\n`;
         debugMsg += `耗时：${result.duration} ms\n`;
         if (result.usage) {
-          debugMsg += `Token 使用：\n`;
-          debugMsg += `  Prompt：${result.usage.prompt_tokens || '?'}\n`;
-          debugMsg += `  Completion：${result.usage.completion_tokens || '?'}\n`;
-          debugMsg += `  Total：${result.usage.total_tokens || '?'}\n`;
+          debugMsg += `Token：${result.usage.total_tokens || '?'}\n`;
         }
         const preview = result.text.substring(0, 60) + (result.text.length > 60 ? '…' : '');
         debugMsg += `译文预览：${preview}`;
@@ -892,7 +899,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
         await incrementUserStat(env, fromUser, 'deepSeek');
         
-        // 推送到博客（带调试）
+        // 推送到博客
         const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '(私有频道)';
         const publishResult = await publishToLogSite(env, {
           title,
@@ -903,9 +910,14 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
           format
         });
         
-        // 发送调试信息
-        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, 
-          `<pre>${escapeHtml(publishResult.debug)}</pre>`);
+        // 发送结果信息
+        let resultMsg = `✅ 文件已生成并推送至博客`;
+        if (publishResult.success && publishResult.url) {
+          resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
+        } else if (!publishResult.success) {
+          resultMsg += `\n\n⚠️ 博客推送失败`;
+        }
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, resultMsg);
         
         await deletePendingForward(env, pendingId);
         await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
@@ -931,10 +943,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
         let debugMsg = `[DEBUG] 翻译服务：百度翻译\n`;
-        debugMsg += `文本长度：${result.debugInfo.textLength}\n`;
+        debugMsg += `长度：${result.debugInfo.textLength}\n`;
         const respData = result.debugInfo.responseData;
         if (respData && respData.from) {
-          debugMsg += `检测语言：${respData.from} → ${respData.to}\n`;
+          debugMsg += `语言：${respData.from} → ${respData.to}\n`;
         }
         debugMsg += `耗时：${result.duration} ms\n`;
         const preview = result.text.substring(0, 60) + (result.text.length > 60 ? '…' : '');
@@ -944,7 +956,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
         await incrementUserStat(env, fromUser, 'baidu');
         
-        // 推送到博客（带调试）
+        // 推送到博客
         const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '(私有频道)';
         const publishResult = await publishToLogSite(env, {
           title,
@@ -955,9 +967,14 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
           format
         });
         
-        // 发送调试信息
-        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, 
-          `<pre>${escapeHtml(publishResult.debug)}</pre>`);
+        // 发送结果信息
+        let resultMsg = `✅ 文件已生成并推送至博客`;
+        if (publishResult.success && publishResult.url) {
+          resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
+        } else if (!publishResult.success) {
+          resultMsg += `\n\n⚠️ 博客推送失败`;
+        }
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, resultMsg);
         
         await deletePendingForward(env, pendingId);
         await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
@@ -1005,7 +1022,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
       await incrementUserStat(env, fromUser, 'myMemory');
       
-      // 推送到博客（带调试）
+      // 推送到博客
       const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '(私有频道)';
       const publishResult = await publishToLogSite(env, {
         title,
@@ -1016,9 +1033,14 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         format
       });
       
-      // 发送调试信息
-      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, 
-        `<pre>${escapeHtml(publishResult.debug)}</pre>`);
+      // 发送结果信息
+      let resultMsg = `✅ 文件已生成并推送至博客`;
+      if (publishResult.success && publishResult.url) {
+        resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
+      } else if (!publishResult.success) {
+        resultMsg += `\n\n⚠️ 博客推送失败`;
+      }
+      await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, resultMsg);
       
       await deletePendingForward(env, pendingId);
       await editMessageRemoveKeyboard(env.TELEGRAM_BOT_TOKEN, chatId, messageId);
