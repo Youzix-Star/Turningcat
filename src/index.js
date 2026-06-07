@@ -479,7 +479,7 @@ async function deletePendingForward(env, key) {
   await env.MEDIA_GROUP_CAPTIONS.delete(`pending:${key}`);
 }
 
-// ==================== 媒体组处理 ====================
+// ==================== 媒体组处理（已修复 entities） ====================
 async function handleMediaGroupMessage(msg, env, ctx) {
   const mediaGroupId = msg.media_group_id;
   if (!mediaGroupId) return false;
@@ -487,6 +487,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
   let groupData = await kv.get(mediaGroupId, { type: 'json' }) || {
     files: [],
     caption: '',
+    caption_entities: [],
     chatId: msg.chat.id,
     forwardFromChat: msg.forward_from_chat ? {
       title: msg.forward_from_chat.title,
@@ -510,6 +511,7 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     });
   }
   if (msg.caption) groupData.caption = msg.caption;
+  if (msg.caption_entities) groupData.caption_entities = msg.caption_entities;
 
   if (!groupData.timerStarted) {
     groupData.timerStarted = true;
@@ -1340,7 +1342,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // 媒体组：文件选择
+  // 媒体组：文件选择（已修复 entities）
   if (data.startsWith('select_file:')) {
     const parts = data.split(':');
     const mediaGroupId = parts[1];
@@ -1356,7 +1358,14 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     const file = groupData.files[fileIndex];
     const safeTitle = sanitizeFilename(file.title);
     const originalText = groupData.caption || '';
-    const markdownText = convertLinksToMarkdown({ text: originalText, entities: [] }).text;
+    const captionEntities = groupData.caption_entities || [];
+    
+    // 使用存储的 entities 进行链接转换
+    const linkResult = convertLinksToMarkdown({ 
+      text: originalText, 
+      caption_entities: captionEntities
+    });
+    const markdownText = linkResult.text;
 
     const pendingId = `${chatId}_${Date.now()}`;
     const pendingData = {
