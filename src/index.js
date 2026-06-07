@@ -479,7 +479,7 @@ async function deletePendingForward(env, key) {
   await env.MEDIA_GROUP_CAPTIONS.delete(`pending:${key}`);
 }
 
-// ==================== 媒体组处理（已修复 entities） ====================
+// ==================== 媒体组处理（已修复 entities + 提前 DEBUG） ====================
 async function handleMediaGroupMessage(msg, env, ctx) {
   const mediaGroupId = msg.media_group_id;
   if (!mediaGroupId) return false;
@@ -517,7 +517,18 @@ async function handleMediaGroupMessage(msg, env, ctx) {
     groupData.timerStarted = true;
     ctx.waitUntil(new Promise(resolve => setTimeout(async () => {
       const finalData = await kv.get(mediaGroupId, { type: 'json' });
-      if (finalData) await sendFileSelection(env.TELEGRAM_BOT_TOKEN, finalData.chatId, mediaGroupId, finalData);
+      if (finalData) {
+        // 发送链接转换 DEBUG 信息
+        const linkResult = convertLinksToMarkdown({ 
+          text: finalData.caption || '', 
+          caption_entities: finalData.caption_entities || []
+        });
+        await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, finalData.chatId, 
+          `<pre>${escapeHtml(linkResult.debug)}</pre>`);
+        
+        // 发送文件选择
+        await sendFileSelection(env.TELEGRAM_BOT_TOKEN, finalData.chatId, mediaGroupId, finalData);
+      }
       resolve();
     }, 1500)));
   }
@@ -1342,7 +1353,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     return;
   }
 
-  // 媒体组：文件选择（已修复 entities）
+  // 媒体组：文件选择
   if (data.startsWith('select_file:')) {
     const parts = data.split(':');
     const mediaGroupId = parts[1];
