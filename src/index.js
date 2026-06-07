@@ -540,7 +540,7 @@ async function sendFileSelection(token, chatId, mediaGroupId, groupData) {
 
 // ==================== 提取软件名称 ====================
 function extractSoftwareName(title) {
-  const nameWithoutExt = title.replace(/\.(apk|APK|zip|ZIP|rar|RAR|7z|7Z|ipa|IPA|exe|EXE|msi|MSI|dmg|DMG|deb|DEB|rpm|RMP)$/i, '');
+  const nameWithoutExt = title.replace(/\.(apk|APK|zip|ZIP|rar|RAR|7z|7Z|ipa|IPA|exe|EXE|msi|MSI|dmg|DMG|deb|DEB|rpm|RPM)$/i, '');
   const match = nameWithoutExt.match(/^([^_-]+)/);
   if (match && match[1]) {
     return match[1].trim();
@@ -552,19 +552,37 @@ function extractSoftwareName(title) {
 function convertLinksToMarkdown(msg) {
   const text = msg.text || msg.caption || '';
   const entities = msg.entities || msg.caption_entities || [];
+  const debugInfo = [];
+  
+  debugInfo.push(`[DEBUG] 链接转换`);
+  debugInfo.push(`文本长度: ${text.length}`);
+  debugInfo.push(`实体数量: ${entities.length}`);
   
   if (!entities || entities.length === 0) {
-    return text;
+    debugInfo.push(`无实体，返回原始文本`);
+    return { text: text, debug: debugInfo.join('\n') };
   }
+  
+  // 列出所有实体
+  entities.forEach((entity, i) => {
+    const entityText = text.substring(entity.offset, entity.offset + entity.length);
+    debugInfo.push(`实体 ${i}: type=${entity.type}, offset=${entity.offset}, length=${entity.length}`);
+    debugInfo.push(`  内容: "${entityText.substring(0, 30)}${entityText.length > 30 ? '...' : ''}"`);
+    if (entity.url) {
+      debugInfo.push(`  URL: ${entity.url.substring(0, 50)}${entity.url.length > 50 ? '...' : ''}`);
+    }
+  });
   
   // 只处理链接类型的实体，按 offset 降序排列（从后往前替换，避免 offset 错位）
   const linkEntities = entities
     .filter(e => e.type === 'text_link' || e.type === 'url')
     .sort((a, b) => b.offset - a.offset);
   
+  debugInfo.push(`链接实体数: ${linkEntities.length}`);
+  
   let result = text;
   
-  linkEntities.forEach(entity => {
+  linkEntities.forEach((entity, i) => {
     const before = result.substring(0, entity.offset);
     const linkText = result.substring(entity.offset, entity.offset + entity.length);
     const after = result.substring(entity.offset + entity.length);
@@ -572,12 +590,16 @@ function convertLinksToMarkdown(msg) {
     if (entity.type === 'text_link' && entity.url) {
       // 嵌入式链接：转成 [text](url) 格式
       result = `${before}[${linkText}](${entity.url})${after}`;
+      debugInfo.push(`转换 ${i}: [${linkText}](${entity.url.substring(0, 30)}...)`);
     } else if (entity.type === 'url') {
-      // 纯文本 URL：保持原样（已经是完整 URL）
+      // 纯文本 URL：保持原样
+      debugInfo.push(`跳过 ${i}: 纯URL ${linkText.substring(0, 30)}...`);
     }
   });
   
-  return result;
+  debugInfo.push(`转换完成，结果长度: ${result.length}`);
+  
+  return { text: result, debug: debugInfo.join('\n') };
 }
 
 // ==================== 单文件转发处理 ====================
@@ -596,7 +618,12 @@ async function handleForwardedMessage(msg, env, ctx) {
   }
 
   // 将链接转换为 Markdown 格式
-  const markdownText = convertLinksToMarkdown(msg);
+  const linkResult = convertLinksToMarkdown(msg);
+  const markdownText = linkResult.text;
+  
+  // 发送链接转换调试信息
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, 
+    `<pre>${escapeHtml(linkResult.debug)}</pre>`);
   
   let titleBase = msg.document ? getBaseName(msg.document.file_name) : originalText.split('\n')[0].trim();
   const safeTitle = sanitizeFilename(titleBase.substring(0, 50));
@@ -1329,7 +1356,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     const file = groupData.files[fileIndex];
     const safeTitle = sanitizeFilename(file.title);
     const originalText = groupData.caption || '';
-    const markdownText = convertLinksToMarkdown({ text: originalText, entities: [] });
+    const markdownText = convertLinksToMarkdown({ text: originalText, entities: [] }).text;
 
     const pendingId = `${chatId}_${Date.now()}`;
     const pendingData = {
