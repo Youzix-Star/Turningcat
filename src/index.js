@@ -439,25 +439,29 @@ async function handleListAuth(token, chatId, fromUserId, env, messageIdToEdit) {
 }
 
 // ==================== 文件内容生成 ====================
-function generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText = null) {
+function generateFileContent(format, title, forwardChat, forwardDate, originalText, translatedText = null, markdownText = null) {
   const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '(私有频道)';
+  
+  // 使用带链接的文本（如果有）
+  const displayText = markdownText || originalText;
 
   if (format === 'md') {
     let body;
     if (translatedText) {
-      const escOrig = originalText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+      const escOrig = displayText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
       const escTrans = translatedText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
       body = `## 原文\n\n${escOrig}\n\n## 简体中文\n\n${escTrans}`;
     } else {
-      const escOrig = originalText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+      const escOrig = displayText.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
       body = `## 原文\n\n${escOrig}`;
     }
     return `# ${title}\n\n来源：${channelLink}\n\n${body}\n\n---\n转发时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}\n`;
   } else {
+    // TXT 格式也使用带链接的文本
     if (translatedText) {
-      return `${title}\n${channelLink}\n\n【原文】\n${originalText}\n\n【简体中文】\n${translatedText}\n\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}`;
+      return `${title}\n${channelLink}\n\n【原文】\n${displayText}\n\n【简体中文】\n${translatedText}\n\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}`;
     } else {
-      return `${title}\n${channelLink}\n\n【原文】\n${originalText}\n\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}`;
+      return `${title}\n${channelLink}\n\n【原文】\n${displayText}\n\n发送时间：${formatDate(forwardDate)}\n生成时间：${formatDate(Math.floor(Date.now()/1000))}`;
     }
   }
 }
@@ -536,18 +540,44 @@ async function sendFileSelection(token, chatId, mediaGroupId, groupData) {
 
 // ==================== 提取软件名称 ====================
 function extractSoftwareName(title) {
-  // 去掉文件扩展名
-  const nameWithoutExt = title.replace(/\.(apk|APK|zip|ZIP|rar|RAR|7z|7Z|ipa|IPA|exe|EXE|msi|MSI|dmg|DMG|deb|DEB|rpm|RPM)$/i, '');
-  
-  // 截取第一个 - 或 _ 之前的部分
+  const nameWithoutExt = title.replace(/\.(apk|APK|zip|ZIP|rar|RAR|7z|7Z|ipa|IPA|exe|EXE|msi|MSI|dmg|DMG|deb|DEB|rpm|RMP)$/i, '');
   const match = nameWithoutExt.match(/^([^_-]+)/);
-  
   if (match && match[1]) {
-    // 返回软件名称，保持原样
     return match[1].trim();
   }
-  
   return null;
+}
+
+// ==================== 将消息中的链接转换为 Markdown 格式 ====================
+function convertLinksToMarkdown(msg) {
+  const text = msg.text || msg.caption || '';
+  const entities = msg.entities || msg.caption_entities || [];
+  
+  if (!entities || entities.length === 0) {
+    return text;
+  }
+  
+  // 只处理链接类型的实体，按 offset 降序排列（从后往前替换，避免 offset 错位）
+  const linkEntities = entities
+    .filter(e => e.type === 'text_link' || e.type === 'url')
+    .sort((a, b) => b.offset - a.offset);
+  
+  let result = text;
+  
+  linkEntities.forEach(entity => {
+    const before = result.substring(0, entity.offset);
+    const linkText = result.substring(entity.offset, entity.offset + entity.length);
+    const after = result.substring(entity.offset + entity.length);
+    
+    if (entity.type === 'text_link' && entity.url) {
+      // 嵌入式链接：转成 [text](url) 格式
+      result = `${before}[${linkText}](${entity.url})${after}`;
+    } else if (entity.type === 'url') {
+      // 纯文本 URL：保持原样（已经是完整 URL）
+    }
+  });
+  
+  return result;
 }
 
 // ==================== 单文件转发处理 ====================
@@ -558,12 +588,16 @@ async function handleForwardedMessage(msg, env, ctx) {
     await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '仅支持从频道转发的消息。');
     return;
   }
+  
   const originalText = msg.text || msg.caption || '';
   if (!originalText) {
     await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, msg.chat.id, '消息无文字内容。');
     return;
   }
 
+  // 将链接转换为 Markdown 格式
+  const markdownText = convertLinksToMarkdown(msg);
+  
   let titleBase = msg.document ? getBaseName(msg.document.file_name) : originalText.split('\n')[0].trim();
   const safeTitle = sanitizeFilename(titleBase.substring(0, 50));
 
@@ -574,6 +608,7 @@ async function handleForwardedMessage(msg, env, ctx) {
     forwardChat: msg.forward_from_chat,
     forwardDate: msg.forward_date,
     originalText: originalText,
+    markdownText: markdownText,
     fromUser: msg.from
   };
   await storePendingForward(env, pendingId, pendingData);
@@ -620,7 +655,6 @@ async function getChannelAvatar(env, chat) {
     debugInfo.push(`频道 ID: ${chatId}`);
     debugInfo.push(`频道 Username: ${chatUsername || '无'}`);
     
-    // 方式1: 通过 chat_id 获取
     debugInfo.push(`尝试通过 chat_id 获取...`);
     const chatResponse = await fetch(`https://api.telegram.org/bot${token}/getChat?chat_id=${chatId}`);
     const chatData = await chatResponse.json();
@@ -647,7 +681,6 @@ async function getChannelAvatar(env, chat) {
       }
     }
     
-    // 方式2: 通过 username 获取（如果有）
     if (chatUsername) {
       debugInfo.push(`尝试通过 @${chatUsername} 获取...`);
       const usernameResponse = await fetch(`https://api.telegram.org/bot${token}/getChat?chat_id=@${chatUsername}`);
@@ -696,7 +729,6 @@ async function saveAvatarToGitHub(env, avatarUrl, channelUsername) {
     const repo = env.LOG_REPO_NAME;
     const token = env.GITHUB_TOKEN;
     
-    // 下载头像
     debugInfo.push(`下载头像...`);
     const avatarResponse = await fetch(avatarUrl);
     debugInfo.push(`下载状态: ${avatarResponse.status}`);
@@ -710,12 +742,10 @@ async function saveAvatarToGitHub(env, avatarUrl, channelUsername) {
     const avatarBase64 = btoa(String.fromCharCode(...new Uint8Array(avatarBuffer)));
     debugInfo.push(`头像大小: ${avatarBuffer.byteLength} 字节`);
     
-    // 生成文件名
     const fileName = channelUsername ? `${channelUsername}.jpg` : `channel_${Date.now()}.jpg`;
     const path = `public/avatars/${fileName}`;
     debugInfo.push(`保存路径: ${path}`);
     
-    // 检查文件是否已存在
     const checkUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
     const checkRes = await fetch(checkUrl, {
       headers: {
@@ -734,7 +764,6 @@ async function saveAvatarToGitHub(env, avatarUrl, channelUsername) {
       debugInfo.push(`文件不存在，将创建`);
     }
     
-    // 上传头像
     debugInfo.push(`上传到 GitHub...`);
     const body = {
       message: `🖼️ 更新频道头像: ${channelUsername || 'unknown'}`,
@@ -775,9 +804,8 @@ async function publishToLogSite(env, logData) {
   const debugInfo = [];
   
   try {
-    const { title, originalText, translatedText, forwardDate, channelLink, format, forwardChat } = logData;
+    const { title, originalText, translatedText, forwardDate, channelLink, format, forwardChat, markdownText } = logData;
     
-    // 检查环境变量
     debugInfo.push(`[DEBUG] 开始推送到博客...`);
     debugInfo.push(`GITHUB_TOKEN: ${env.GITHUB_TOKEN ? '已配置' : '❌ 未配置'}`);
     debugInfo.push(`LOG_REPO_OWNER: ${env.LOG_REPO_OWNER || '❌ 未配置'}`);
@@ -835,6 +863,9 @@ async function publishToLogSite(env, logData) {
       tags.push(softwareName);
     }
     
+    // 使用带链接的文本
+    const displayText = markdownText || originalText;
+    
     // 生成 Markdown 内容
     const content = `---
 title: "${title.replace(/"/g, '\\"')}"
@@ -850,7 +881,7 @@ tags: [${tags.map(t => `"${t}"`).join(', ')}]
 
 ## 原文
 
-${originalText}
+${displayText}
 
 ${translatedText ? `## 简体中文
 
@@ -869,7 +900,6 @@ ${translatedText}` : ''}
     
     const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
     
-    // 先检查文件是否已存在
     const checkRes = await fetch(url, {
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -884,7 +914,6 @@ ${translatedText}` : ''}
       sha = data.sha;
     }
     
-    // 创建或更新文件
     const body = {
       message: `📝 添加日志: ${title}`,
       content: btoa(unescape(encodeURIComponent(content))),
@@ -1005,14 +1034,13 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     }
 
     if (service === 'no') {
-      const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
-      const content = generateFileContent(format, title, forwardChat, forwardDate, originalText);
+      const { title, forwardChat, forwardDate, originalText, markdownText, fromUser, format } = pendingData;
+      const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, null, markdownText);
       const quote = await getRandomQuote(env);
       const fileName = `${title}-Log.${format === 'md' ? 'md' : 'txt'}`;
       await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
       await incrementUserStat(env, fromUser, 'genfile');
       
-      // 推送到博客
       const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '(私有频道)';
       const publishResult = await publishToLogSite(env, {
         title,
@@ -1021,10 +1049,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         forwardDate,
         channelLink,
         format,
-        forwardChat
+        forwardChat,
+        markdownText
       });
       
-      // 发送调试信息 + 博客链接
       let resultMsg = `<pre>${escapeHtml(publishResult.debug)}</pre>`;
       if (publishResult.success && publishResult.url) {
         resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
@@ -1090,8 +1118,8 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         }
 
         const result = await translateDeepSeek(pendingData.originalText, apiKey);
-        const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
-        const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, result.text);
+        const { title, forwardChat, forwardDate, originalText, markdownText, fromUser, format } = pendingData;
+        const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, result.text, markdownText);
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
@@ -1107,7 +1135,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
         await incrementUserStat(env, fromUser, 'deepSeek');
         
-        // 推送到博客
         const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '(私有频道)';
         const publishResult = await publishToLogSite(env, {
           title,
@@ -1116,10 +1143,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
           forwardDate,
           channelLink,
           format,
-          forwardChat
+          forwardChat,
+          markdownText
         });
         
-        // 发送调试信息 + 博客链接
         let resultMsg = `<pre>${escapeHtml(publishResult.debug)}</pre>`;
         if (publishResult.success && publishResult.url) {
           resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
@@ -1144,8 +1171,8 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         }
 
         const result = await translateBaidu(pendingData.originalText, appId, secretKey);
-        const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
-        const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, result.text);
+        const { title, forwardChat, forwardDate, originalText, markdownText, fromUser, format } = pendingData;
+        const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, result.text, markdownText);
         const quote = await getRandomQuote(env);
         const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
@@ -1163,7 +1190,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
         await incrementUserStat(env, fromUser, 'baidu');
         
-        // 推送到博客
         const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '(私有频道)';
         const publishResult = await publishToLogSite(env, {
           title,
@@ -1172,10 +1198,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
           forwardDate,
           channelLink,
           format,
-          forwardChat
+          forwardChat,
+          markdownText
         });
         
-        // 发送调试信息 + 博客链接
         let resultMsg = `<pre>${escapeHtml(publishResult.debug)}</pre>`;
         if (publishResult.success && publishResult.url) {
           resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
@@ -1208,13 +1234,13 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       return;
     }
 
-    const { title, forwardChat, forwardDate, originalText, fromUser, format } = pendingData;
+    const { title, forwardChat, forwardDate, originalText, markdownText, fromUser, format } = pendingData;
 
     try {
       const email = (env.TRANSLATION_EMAIL || 'anonymous@bot.mymemory').trim();
       const result = await translateMyMemory(originalText, sourceLang, email);
 
-      const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, result.text);
+      const content = generateFileContent(format, title, forwardChat, forwardDate, originalText, result.text, markdownText);
       const quote = await getRandomQuote(env);
       const fileName = `${title}-CN.${format === 'md' ? 'md' : 'txt'}`;
 
@@ -1228,7 +1254,6 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       await sendDocument(env.TELEGRAM_BOT_TOKEN, chatId, fileName, content, quote, format);
       await incrementUserStat(env, fromUser, 'myMemory');
       
-      // 推送到博客
       const channelLink = forwardChat.username ? `https://t.me/${forwardChat.username}` : '(私有频道)';
       const publishResult = await publishToLogSite(env, {
         title,
@@ -1237,10 +1262,10 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
         forwardDate,
         channelLink,
         format,
-        forwardChat
+        forwardChat,
+        markdownText
       });
       
-      // 发送调试信息 + 博客链接
       let resultMsg = `<pre>${escapeHtml(publishResult.debug)}</pre>`;
       if (publishResult.success && publishResult.url) {
         resultMsg += `\n\n📖 博客链接：${publishResult.url}`;
@@ -1304,6 +1329,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
     const file = groupData.files[fileIndex];
     const safeTitle = sanitizeFilename(file.title);
     const originalText = groupData.caption || '';
+    const markdownText = convertLinksToMarkdown({ text: originalText, entities: [] });
 
     const pendingId = `${chatId}_${Date.now()}`;
     const pendingData = {
@@ -1312,6 +1338,7 @@ async function handleCallbackQuery(callbackQuery, env, ctx) {
       forwardChat: groupData.forwardFromChat,
       forwardDate: groupData.forwardDate,
       originalText: originalText,
+      markdownText: markdownText,
       fromUser: fromUser,
     };
     await storePendingForward(env, pendingId, pendingData);
